@@ -9,9 +9,12 @@ from typing import Any
 
 
 PROTOCOL_VERSION = 1
-READ_ACTIONS = frozenset({"get_scene_summary", "capture_viewport"})
-WRITE_ACTIONS = frozenset({"transform_object", "undo", "save_checkpoint", "create_hemisphere"})
-ALLOWED_ACTIONS = READ_ACTIONS | WRITE_ACTIONS
+READ_ACTIONS = frozenset({"get_scene_summary", "capture_viewport", "render_workbench_preview"})
+WRITE_ACTIONS = frozenset(
+    {"transform_object", "undo", "save_checkpoint", "create_hemisphere", "create_image_relief"}
+)
+ADMIN_ACTIONS = frozenset({"reload_core"})
+ALLOWED_ACTIONS = READ_ACTIONS | WRITE_ACTIONS | ADMIN_ACTIONS
 
 
 class ProtocolError(ValueError):
@@ -116,6 +119,85 @@ def validate_command(payload: Mapping[str, Any]) -> Command:
             "direction": direction,
             "segments": segments,
             "rings": rings,
+        }
+    elif action == "create_image_relief":
+        name = arguments.get("name")
+        if not isinstance(name, str) or not name or len(name) > 255:
+            raise ProtocolError("create_image_relief.name must be a non-empty string")
+        image_path = arguments.get("image_path")
+        if not isinstance(image_path, str) or not image_path or len(image_path) > 4096:
+            raise ProtocolError("create_image_relief.image_path must be a non-empty string")
+        location = _vector3(arguments.get("location"), "location")
+        normal = _vector3(arguments.get("normal"), "normal")
+        up = _vector3(arguments.get("up"), "up")
+        width = arguments.get("width")
+        depth = arguments.get("depth")
+        if not isinstance(width, Real) or isinstance(width, bool) or not 0 < width <= 10:
+            raise ProtocolError("create_image_relief.width must be between 0 and 10")
+        if not isinstance(depth, Real) or isinstance(depth, bool) or not 0 < depth <= 1:
+            raise ProtocolError("create_image_relief.depth must be between 0 and 1")
+        threshold = arguments.get("threshold", 0.5)
+        if not isinstance(threshold, Real) or isinstance(threshold, bool) or not 0 < threshold < 1:
+            raise ProtocolError("create_image_relief.threshold must be between 0 and 1")
+        resolution = arguments.get("resolution", 192)
+        if not isinstance(resolution, int) or isinstance(resolution, bool) or not 32 <= resolution <= 512:
+            raise ProtocolError("create_image_relief.resolution must be between 32 and 512")
+        allowed = {
+            "name",
+            "image_path",
+            "location",
+            "normal",
+            "up",
+            "width",
+            "depth",
+            "threshold",
+            "resolution",
+        }
+        if set(arguments) - allowed:
+            raise ProtocolError("create_image_relief contains unknown arguments")
+        arguments = {
+            "name": name,
+            "image_path": image_path,
+            "location": location,
+            "normal": normal,
+            "up": up,
+            "width": float(width),
+            "depth": float(depth),
+            "threshold": float(threshold),
+            "resolution": resolution,
+        }
+    elif action == "reload_core":
+        release_path = arguments.get("release_path")
+        digest = arguments.get("sha256")
+        if not isinstance(release_path, str) or not release_path or len(release_path) > 4096:
+            raise ProtocolError("reload_core.release_path must be a non-empty string")
+        if (
+            not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ProtocolError("reload_core.sha256 must be a lowercase hexadecimal digest")
+        if set(arguments) != {"release_path", "sha256"}:
+            raise ProtocolError("reload_core contains unknown arguments")
+        arguments = {"release_path": release_path, "sha256": digest}
+    elif action == "render_workbench_preview":
+        view = arguments.get("view", "front")
+        if view not in {"front", "back", "left", "right", "top"}:
+            raise ProtocolError("render_workbench_preview.view is invalid")
+        target = _vector3(arguments.get("target", [0, 0, 0]), "target")
+        ortho_scale = arguments.get("ortho_scale", 1.0)
+        resolution = arguments.get("resolution", 800)
+        if not isinstance(ortho_scale, Real) or isinstance(ortho_scale, bool) or not 0.01 <= ortho_scale <= 100:
+            raise ProtocolError("render_workbench_preview.ortho_scale must be between 0.01 and 100")
+        if not isinstance(resolution, int) or isinstance(resolution, bool) or not 128 <= resolution <= 2048:
+            raise ProtocolError("render_workbench_preview.resolution must be between 128 and 2048")
+        if set(arguments) - {"view", "target", "ortho_scale", "resolution"}:
+            raise ProtocolError("render_workbench_preview contains unknown arguments")
+        arguments = {
+            "view": view,
+            "target": target,
+            "ortho_scale": float(ortho_scale),
+            "resolution": resolution,
         }
 
     return Command(request_id=request_id, action=action, arguments=arguments)

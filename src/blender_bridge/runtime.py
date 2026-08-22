@@ -37,6 +37,14 @@ class RuntimePaths:
     def token_file(self) -> Path:
         return self.root / "token"
 
+    @property
+    def releases_dir(self) -> Path:
+        return self.root / "releases"
+
+    @property
+    def current_core_file(self) -> Path:
+        return self.root / "current-core.json"
+
     def ensure(self) -> None:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
         try:
@@ -58,3 +66,12 @@ class RuntimePaths:
             return self.token_file.read_text(encoding="utf-8").strip()
         except FileNotFoundError as exc:
             raise RuntimeError("Blender bridge token was not found") from exc
+
+    def core_state(self) -> dict[str, object]:
+        try:
+            value = json.loads(self.current_core_file.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise RuntimeError("No deployed core release was found") from exc
+        if not isinstance(value, dict) or not isinstance(value.get("current"), dict):
+            raise RuntimeError("The deployed core state is invalid")
+        return value

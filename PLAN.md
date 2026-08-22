@@ -26,6 +26,8 @@ mantendo um mecanismo de parada independente do foco da interface.
 - [x] Cliente CLI basico.
 - [x] Esqueleto do add-on com fila para a thread principal.
 - [x] Primitiva de hemisferio fechado para detalhes do modelo.
+- [x] Vetorizacao do canal alfa de PNG para relevos 3D reutilizaveis.
+- [x] Bootstrap estavel com deploy atomico, reload e rollback do nucleo.
 - [ ] Instalar o add-on e validar a conexao em uma sessao grafica do Blender.
 - [ ] Validar `get_scene_summary`, transformacao, undo e checkpoint.
 

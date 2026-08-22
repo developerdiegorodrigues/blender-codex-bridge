@@ -7,13 +7,15 @@ teclado fica reservada para uma etapa posterior.
 ## Estado atual
 
 - contrato inicial de comandos e respostas;
-- add-on local para Blender 4.x;
+- bootstrap local para Blender 4.x com nucleo recarregavel;
 - servidor HTTP restrito a `127.0.0.1`;
 - autenticacao por token local;
 - fila que executa chamadas `bpy` somente na thread principal do Blender;
 - parada de emergencia por arquivo sentinela;
 - cliente CLI para diagnostico, parada, retomada e inspecao da cena.
-- criacao de hemisferios fechados para detalhes como pupilas.
+- criacao de hemisferios fechados para detalhes como pupilas;
+- conversao do canal alfa de PNGs em relevos 3D reutilizaveis.
+- deploy atomico do nucleo, com recarga e rollback sem reiniciar o Blender.
 
 O adaptador MCP sera construido sobre este protocolo depois que a comunicacao
 com o Blender estiver validada.
@@ -33,7 +35,7 @@ Primeiro gere o pacote (um pacote pronto tambem pode existir em `dist/`):
 
 ```bash
 mkdir -p dist
-(cd addon && zip -r ../dist/blender-codex-bridge-addon-0.2.0.zip blender_codex_bridge -x '*__pycache__*')
+(cd addon && zip -r ../dist/blender-codex-bridge-addon-0.4.0.zip blender_codex_bridge -x '*__pycache__*')
 ```
 
 No Blender aberto:
@@ -41,7 +43,7 @@ No Blender aberto:
 1. Salve o modelo atual antes dos testes.
 2. Abra `Edit > Preferences > Add-ons`.
 3. Clique em `Install...`.
-4. Selecione `dist/blender-codex-bridge-addon-0.2.0.zip`.
+4. Selecione `dist/blender-codex-bridge-addon-0.4.0.zip`.
 5. Marque **Interface: Blender Codex Bridge** para habilitar o add-on.
 
 Nao e necessario reiniciar o Blender. Ao marcar o add-on, ele inicia o servidor
@@ -51,11 +53,17 @@ Com o add-on ativo:
 
 ```bash
 blender-agent status
+blender-agent deploy
+blender-agent reload
+blender-agent rollback
 blender-agent scene
 blender-agent checkpoint before-change
 blender-agent capture
 blender-agent hemisphere --name Pupil.L \
   --location 0.075 -0.205 0.22 --radius 0.012 --direction=-Y
+blender-agent relief --name Back.Symbol --image /caminho/simbolo.png \
+  --location 0 0.12 -0.10 --normal 0 1 0.16 --up 0 -0.16 1 \
+  --width 0.09 --depth 0.006 --resolution 512
 blender-agent stop
 blender-agent resume
 ```
@@ -71,6 +79,29 @@ touch /tmp/blender-codex-bridge-$(id -u)/STOP
 
 `Ctrl+C` continua interrompendo o cliente no terminal, mas nao e tratado como
 o mecanismo principal de emergencia porque o foco pode estar no Blender.
+
+## Atualizacoes sem a interface do Blender
+
+Desde a versao 0.4, o arquivo `__init__.py` e um bootstrap estavel e as
+operacoes de modelagem ficam em `core.py`. Para publicar uma alteracao do
+nucleo na sessao aberta:
+
+```bash
+blender-agent deploy
+```
+
+O cliente valida a sintaxe, calcula SHA-256 e grava uma release imutavel no
+diretorio de runtime. O bootstrap confere o caminho, checksum, versao da API e
+autoteste antes de trocar o nucleo ativo. Uma falha preserva a versao anterior.
+
+```bash
+blender-agent status    # mostra versoes do bootstrap e do nucleo
+blender-agent reload    # recarrega a release atual
+blender-agent rollback  # volta atomicamente para a release anterior
+```
+
+Alteracoes no proprio bootstrap continuam exigindo reinstalacao ou uma recarga
+manual do add-on, mas devem ser raras.
 
 ## Configuracao
 

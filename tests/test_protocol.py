@@ -81,6 +81,84 @@ class ProtocolTests(unittest.TestCase):
                 }
             )
 
+    def test_accepts_an_image_relief(self):
+        command = validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": "request-7",
+                "action": "create_image_relief",
+                "arguments": {
+                    "name": "Back.Symbol",
+                    "image_path": "/tmp/symbol.png",
+                    "location": [0, 0.12, -0.1],
+                    "normal": [0, 1, 0.16],
+                    "up": [0, -0.16, 1],
+                    "width": 0.09,
+                    "depth": 0.006,
+                },
+            }
+        )
+        self.assertEqual(command.arguments["resolution"], 192)
+        self.assertEqual(command.arguments["threshold"], 0.5)
+
+    def test_rejects_an_oversized_relief_resolution(self):
+        with self.assertRaises(ProtocolError):
+            validate_command(
+                {
+                    "protocol_version": 1,
+                    "request_id": "request-8",
+                    "action": "create_image_relief",
+                    "arguments": {
+                        "name": "Back.Symbol",
+                        "image_path": "/tmp/symbol.png",
+                        "location": [0, 0, 0],
+                        "normal": [0, 1, 0],
+                        "up": [0, 0, 1],
+                        "width": 0.09,
+                        "depth": 0.006,
+                        "resolution": 4096,
+                    },
+                }
+            )
+
+    def test_accepts_a_core_reload(self):
+        digest = "a" * 64
+        command = validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": "request-9",
+                "action": "reload_core",
+                "arguments": {
+                    "release_path": "/tmp/blender-codex-bridge/releases/a/core.py",
+                    "sha256": digest,
+                },
+            }
+        )
+        self.assertEqual(command.arguments["sha256"], digest)
+
+    def test_rejects_an_invalid_core_checksum(self):
+        with self.assertRaises(ProtocolError):
+            validate_command(
+                {
+                    "protocol_version": 1,
+                    "request_id": "request-10",
+                    "action": "reload_core",
+                    "arguments": {"release_path": "/tmp/core.py", "sha256": "not-a-digest"},
+                }
+            )
+
+    def test_accepts_a_back_preview(self):
+        command = validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": "request-11",
+                "action": "render_workbench_preview",
+                "arguments": {"view": "back", "target": [0, 0, 0.04], "ortho_scale": 1.0},
+            }
+        )
+        self.assertEqual(command.arguments["view"], "back")
+        self.assertEqual(command.arguments["resolution"], 800)
+
 
 if __name__ == "__main__":
     unittest.main()
