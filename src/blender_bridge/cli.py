@@ -80,6 +80,9 @@ def build_parser() -> argparse.ArgumentParser:
     preview.add_argument("--target", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0, 0, 0))
     preview.add_argument("--ortho-scale", type=float, default=1.0)
     preview.add_argument("--resolution", type=int, default=800)
+    components = subparsers.add_parser("components", help="summarize connected mesh components")
+    components.add_argument("--object", dest="object_name", required=True)
+    components.add_argument("--limit", type=int, default=12)
     hemisphere = subparsers.add_parser("hemisphere", help="create a closed hemisphere")
     hemisphere.add_argument("--name", required=True)
     hemisphere.add_argument("--location", nargs=3, type=float, metavar=("X", "Y", "Z"), required=True)
@@ -96,6 +99,15 @@ def build_parser() -> argparse.ArgumentParser:
     relief.add_argument("--depth", type=float, required=True)
     relief.add_argument("--threshold", type=float, default=0.5)
     relief.add_argument("--resolution", type=int, default=192)
+    mouth = subparsers.add_parser("mouth", help="thicken a mouth line by deforming the target mesh")
+    mouth.add_argument("--object", dest="object_name", required=True)
+    mouth.add_argument("--point", action="append", nargs=3, type=float, metavar=("X", "Y", "Z"), required=True)
+    mouth.add_argument("--normal", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0.0, -1.0, 0.0))
+    mouth.add_argument("--radius", type=float, required=True)
+    mouth.add_argument("--amount", type=float, required=True)
+    mouth.add_argument("--surface-window", type=float, default=None)
+    mouth.add_argument("--normal-threshold", type=float, default=0.15)
+    mouth.add_argument("--dry-run", action="store_true")
     subparsers.add_parser("stop", help="block queued and future commands")
     subparsers.add_parser("resume", help="remove the emergency stop sentinel")
     return parser
@@ -139,6 +151,13 @@ def main(argv: list[str] | None = None) -> int:
                     },
                 )
             )
+        elif args.command == "components":
+            _print(
+                BridgeClient(runtime).command(
+                    "get_mesh_components",
+                    {"object_name": args.object_name, "limit": args.limit},
+                )
+            )
         elif args.command == "hemisphere":
             arguments = {
                 "name": args.name,
@@ -166,6 +185,19 @@ def main(argv: list[str] | None = None) -> int:
                     },
                 )
             )
+        elif args.command == "mouth":
+            arguments = {
+                "object_name": args.object_name,
+                "points": args.point,
+                "normal": args.normal,
+                "radius": args.radius,
+                "amount": args.amount,
+                "normal_threshold": args.normal_threshold,
+                "dry_run": args.dry_run,
+            }
+            if args.surface_window is not None:
+                arguments["surface_window"] = args.surface_window
+            _print(BridgeClient(runtime).command("thicken_mouth_line", arguments))
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

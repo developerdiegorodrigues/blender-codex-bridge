@@ -23,13 +23,13 @@ from mathutils import Matrix, Vector
 
 
 CORE_API_VERSION = 1
-CORE_VERSION = "0.4.1"
+CORE_VERSION = "0.4.4"
 
 
 def self_test() -> dict[str, object]:
     if bpy.app.version < (4, 0, 0):
         raise RuntimeError("Blender 4.0 or newer is required")
-    required = {"get_scene_summary", "create_hemisphere", "create_image_relief"}
+    required = {"get_scene_summary", "create_hemisphere", "create_image_relief", "thicken_mouth_line"}
     missing = required - ALLOWED_ACTIONS
     if missing:
         raise RuntimeError(f"core is missing required actions: {sorted(missing)}")
@@ -56,6 +56,8 @@ ALLOWED_ACTIONS = {
     "create_hemisphere",
     "create_image_relief",
     "render_workbench_preview",
+    "get_mesh_components",
+    "thicken_mouth_line",
 }
 MAX_REQUEST_BYTES = 256 * 1024
 COMMAND_TIMEOUT_SECONDS = 30.0
@@ -193,6 +195,15 @@ def _validate_payload(payload: object) -> None:
     action = payload["action"]
     if action in {"get_scene_summary", "undo", "capture_viewport"} and arguments:
         raise ValueError(f"{action} does not accept arguments")
+    if action == "get_mesh_components":
+        object_name = arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ValueError("get_mesh_components requires a valid object_name")
+        limit = arguments.get("limit", 12)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("get_mesh_components.limit must be between 1 and 100")
+        if set(arguments) - {"object_name", "limit"}:
+            raise ValueError("get_mesh_components contains unknown arguments")
     if action == "transform_object":
         name = arguments.get("name")
         if not isinstance(name, str) or not name or len(name) > 255:
@@ -259,6 +270,50 @@ def _validate_payload(payload: object) -> None:
         allowed = {"name", "image_path", "location", "normal", "up", "width", "depth", "threshold", "resolution"}
         if set(arguments) - allowed:
             raise ValueError("create_image_relief contains unknown arguments")
+    if action == "thicken_mouth_line":
+        object_name = arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ValueError("thicken_mouth_line requires a valid object_name")
+        points = arguments.get("points")
+        if not isinstance(points, list) or not 2 <= len(points) <= 16:
+            raise ValueError("thicken_mouth_line.points must contain 2 to 16 points")
+        for point in points:
+            if not isinstance(point, list) or len(point) != 3 or any(not isinstance(item, (int, float)) for item in point):
+                raise ValueError("thicken_mouth_line.points must contain numeric 3D points")
+        _validate_vector(arguments, "normal")
+        if "normal" not in arguments:
+            raise ValueError("thicken_mouth_line requires normal")
+        radius = arguments.get("radius")
+        amount = arguments.get("amount")
+        surface_window = arguments.get("surface_window", radius)
+        if isinstance(radius, bool) or not isinstance(radius, (int, float)) or not 0 < radius <= 1:
+            raise ValueError("thicken_mouth_line.radius must be between 0 and 1")
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not 0 < amount <= 1:
+            raise ValueError("thicken_mouth_line.amount must be between 0 and 1")
+        if isinstance(surface_window, bool) or not isinstance(surface_window, (int, float)) or not 0 < surface_window <= 1:
+            raise ValueError("thicken_mouth_line.surface_window must be between 0 and 1")
+        normal_threshold = arguments.get("normal_threshold", 0.15)
+        if (
+            isinstance(normal_threshold, bool)
+            or not isinstance(normal_threshold, (int, float))
+            or not -1 <= normal_threshold <= 1
+        ):
+            raise ValueError("thicken_mouth_line.normal_threshold must be between -1 and 1")
+        dry_run = arguments.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            raise ValueError("thicken_mouth_line.dry_run must be a boolean")
+        allowed = {
+            "object_name",
+            "points",
+            "normal",
+            "radius",
+            "amount",
+            "surface_window",
+            "normal_threshold",
+            "dry_run",
+        }
+        if set(arguments) - allowed:
+            raise ValueError("thicken_mouth_line contains unknown arguments")
     if action == "render_workbench_preview":
         view = arguments.get("view", "front")
         if view not in {"front", "back", "left", "right", "top"}:
@@ -292,6 +347,64 @@ def _scene_summary() -> dict[str, Any]:
             }
             for obj in scene.objects
         ],
+    }
+
+
+def _mesh_components(arguments: dict[str, Any]) -> dict[str, Any]:
+    obj = bpy.data.objects.get(arguments["object_name"])
+    if obj is None or obj.type != "MESH":
+        raise ValueError(f"mesh object not found: {arguments['object_name']}")
+    mesh = obj.data
+    adjacency: list[set[int]] = [set() for _ in mesh.vertices]
+    for edge in mesh.edges:
+        first, second = edge.vertices
+        adjacency[first].add(second)
+        adjacency[second].add(first)
+
+    seen: set[int] = set()
+    components: list[dict[str, Any]] = []
+    for start in range(len(mesh.vertices)):
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        vertices: list[int] = []
+        while stack:
+            index = stack.pop()
+            vertices.append(index)
+            for neighbor in adjacency[index]:
+                if neighbor not in seen:
+                    seen.add(neighbor)
+                    stack.append(neighbor)
+        bounds_min = Vector((math.inf, math.inf, math.inf))
+        bounds_max = Vector((-math.inf, -math.inf, -math.inf))
+        for index in vertices:
+            world = obj.matrix_world @ mesh.vertices[index].co
+            bounds_min.x = min(bounds_min.x, world.x)
+            bounds_min.y = min(bounds_min.y, world.y)
+            bounds_min.z = min(bounds_min.z, world.z)
+            bounds_max.x = max(bounds_max.x, world.x)
+            bounds_max.y = max(bounds_max.y, world.y)
+            bounds_max.z = max(bounds_max.z, world.z)
+        components.append(
+            {
+                "vertices": len(vertices),
+                "bounds_min": list(bounds_min),
+                "bounds_max": list(bounds_max),
+                "center": list((bounds_min + bounds_max) * 0.5),
+                "size": list(bounds_max - bounds_min),
+            }
+        )
+
+    components.sort(key=lambda item: item["vertices"], reverse=True)
+    limit = int(arguments.get("limit", 12))
+    return {
+        "object": obj.name,
+        "vertices": len(mesh.vertices),
+        "edges": len(mesh.edges),
+        "faces": len(mesh.polygons),
+        "component_count": len(components),
+        "components": components[:limit],
     }
 
 
@@ -627,6 +740,124 @@ def _create_image_relief(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _point_to_polyline_distance(
+    point: Vector,
+    points: list[Vector],
+    normal: Vector,
+) -> tuple[float, float]:
+    closest_planar = math.inf
+    closest_offset = math.inf
+    for index in range(len(points) - 1):
+        start = points[index]
+        segment = points[index + 1] - start
+        length_squared = segment.length_squared
+        if length_squared <= 1e-12:
+            continue
+        t = max(0.0, min(1.0, (point - start).dot(segment) / length_squared))
+        closest = start + segment * t
+        delta = point - closest
+        offset = delta.dot(normal)
+        planar = delta - normal * offset
+        distance = planar.length
+        if distance < closest_planar:
+            closest_planar = distance
+            closest_offset = abs(offset)
+    return closest_planar, closest_offset
+
+
+def _thicken_mouth_line(arguments: dict[str, Any]) -> dict[str, Any]:
+    obj = bpy.data.objects.get(arguments["object_name"])
+    if obj is None or obj.type != "MESH":
+        raise ValueError(f"mesh object not found: {arguments['object_name']}")
+    mesh = obj.data
+    normal = Vector(arguments["normal"]).normalized()
+    if normal.length < 0.5:
+        raise ValueError("normal must not be zero")
+    points = [Vector(point) for point in arguments["points"]]
+    radius = float(arguments["radius"])
+    amount = float(arguments["amount"])
+    surface_window = float(arguments.get("surface_window", radius))
+    normal_threshold = float(arguments.get("normal_threshold", 0.15))
+    dry_run = bool(arguments.get("dry_run", False))
+    inverse = obj.matrix_world.inverted()
+    normal_matrix = obj.matrix_world.to_3x3()
+    path_min = Vector(
+        (
+            min(point.x for point in points) - radius,
+            min(point.y for point in points) - surface_window,
+            min(point.z for point in points) - radius,
+        )
+    )
+    path_max = Vector(
+        (
+            max(point.x for point in points) + radius,
+            max(point.y for point in points) + surface_window,
+            max(point.z for point in points) + radius,
+        )
+    )
+
+    affected = 0
+    max_displacement = 0.0
+    bounds_min = Vector((math.inf, math.inf, math.inf))
+    bounds_max = Vector((-math.inf, -math.inf, -math.inf))
+    for vertex in mesh.vertices:
+        world = obj.matrix_world @ vertex.co
+        if (
+            world.x < path_min.x
+            or world.x > path_max.x
+            or world.y < path_min.y
+            or world.y > path_max.y
+            or world.z < path_min.z
+            or world.z > path_max.z
+        ):
+            continue
+        vertex_normal = (normal_matrix @ vertex.normal).normalized()
+        if vertex_normal.dot(normal) < normal_threshold:
+            continue
+        planar_distance, normal_distance = _point_to_polyline_distance(world, points, normal)
+        if planar_distance > radius or normal_distance > surface_window:
+            continue
+        planar_falloff = 1.0 - planar_distance / radius
+        normal_falloff = 1.0 - normal_distance / surface_window
+        influence = (planar_falloff * planar_falloff) * max(0.0, normal_falloff)
+        displacement = amount * influence
+        if displacement <= 1e-7:
+            continue
+        if not dry_run:
+            vertex.co = inverse @ (world + normal * displacement)
+        affected += 1
+        max_displacement = max(max_displacement, displacement)
+        bounds_min.x = min(bounds_min.x, world.x)
+        bounds_min.y = min(bounds_min.y, world.y)
+        bounds_min.z = min(bounds_min.z, world.z)
+        bounds_max.x = max(bounds_max.x, world.x)
+        bounds_max.y = max(bounds_max.y, world.y)
+        bounds_max.z = max(bounds_max.z, world.z)
+
+    if affected == 0:
+        raise ValueError("thicken_mouth_line did not affect any vertices")
+    if not dry_run:
+        mesh.update()
+        obj["blender_codex_mouth_thickened"] = {
+            "points": [list(point) for point in points],
+            "normal": list(normal),
+            "radius": radius,
+            "amount": amount,
+            "affected_vertices": affected,
+        }
+        bpy.context.view_layer.update()
+    return {
+        "object": obj.name,
+        "affected_vertices": affected,
+        "radius": radius,
+        "amount": amount,
+        "max_displacement": max_displacement,
+        "dry_run": dry_run,
+        "bounds_min": list(bounds_min),
+        "bounds_max": list(bounds_max),
+    }
+
+
 def _render_workbench_preview(request_id: str, arguments: dict[str, Any]) -> dict[str, Any]:
     assert STATE is not None
     directory = STATE.runtime / "captures"
@@ -697,6 +928,8 @@ def _execute(payload: dict[str, Any]) -> object:
     arguments = payload.get("arguments", {})
     if action == "get_scene_summary":
         return _scene_summary()
+    if action == "get_mesh_components":
+        return _mesh_components(arguments)
     if action == "transform_object":
         return _transform(arguments)
     if action == "undo":
@@ -709,6 +942,8 @@ def _execute(payload: dict[str, Any]) -> object:
         return _create_hemisphere(arguments)
     if action == "create_image_relief":
         return _create_image_relief(arguments)
+    if action == "thicken_mouth_line":
+        return _thicken_mouth_line(arguments)
     if action == "render_workbench_preview":
         return _render_workbench_preview(payload["request_id"], arguments)
     raise ValueError(f"unsupported action: {action}")

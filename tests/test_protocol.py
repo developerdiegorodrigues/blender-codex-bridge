@@ -159,6 +159,52 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(command.arguments["view"], "back")
         self.assertEqual(command.arguments["resolution"], 800)
 
+    def test_accepts_mesh_components(self):
+        command = validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": "request-12",
+                "action": "get_mesh_components",
+                "arguments": {"object_name": "tmpasb4izdy.ply"},
+            }
+        )
+        self.assertEqual(command.arguments["limit"], 12)
+
+    def test_accepts_mouth_thickening(self):
+        command = validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": "request-13",
+                "action": "thicken_mouth_line",
+                "arguments": {
+                    "object_name": "tmpasb4izdy.ply",
+                    "points": [[-0.06, -0.24, 0.1], [0.0, -0.25, 0.08], [0.06, -0.24, 0.1]],
+                    "normal": [0, -1, 0],
+                    "radius": 0.014,
+                    "amount": 0.004,
+                },
+            }
+        )
+        self.assertEqual(command.arguments["surface_window"], 0.014)
+        self.assertEqual(command.arguments["points"][0], [-0.06, -0.24, 0.1])
+
+    def test_rejects_mouth_thickening_without_enough_points(self):
+        with self.assertRaises(ProtocolError):
+            validate_command(
+                {
+                    "protocol_version": 1,
+                    "request_id": "request-14",
+                    "action": "thicken_mouth_line",
+                    "arguments": {
+                        "object_name": "tmpasb4izdy.ply",
+                        "points": [[0, -0.24, 0.08]],
+                        "normal": [0, -1, 0],
+                        "radius": 0.014,
+                        "amount": 0.004,
+                    },
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,9 +9,18 @@ from typing import Any
 
 
 PROTOCOL_VERSION = 1
-READ_ACTIONS = frozenset({"get_scene_summary", "capture_viewport", "render_workbench_preview"})
+READ_ACTIONS = frozenset(
+    {"get_scene_summary", "capture_viewport", "render_workbench_preview", "get_mesh_components"}
+)
 WRITE_ACTIONS = frozenset(
-    {"transform_object", "undo", "save_checkpoint", "create_hemisphere", "create_image_relief"}
+    {
+        "transform_object",
+        "undo",
+        "save_checkpoint",
+        "create_hemisphere",
+        "create_image_relief",
+        "thicken_mouth_line",
+    }
 )
 ADMIN_ACTIONS = frozenset({"reload_core"})
 ALLOWED_ACTIONS = READ_ACTIONS | WRITE_ACTIONS | ADMIN_ACTIONS
@@ -67,6 +76,16 @@ def validate_command(payload: Mapping[str, Any]) -> Command:
     if action in {"get_scene_summary", "undo", "capture_viewport"}:
         if arguments:
             raise ProtocolError(f"{action} does not accept arguments")
+    elif action == "get_mesh_components":
+        object_name = arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ProtocolError("get_mesh_components.object_name must be a non-empty string")
+        limit = arguments.get("limit", 12)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ProtocolError("get_mesh_components.limit must be between 1 and 100")
+        if set(arguments) - {"object_name", "limit"}:
+            raise ProtocolError("get_mesh_components contains unknown arguments")
+        arguments = {"object_name": object_name, "limit": limit}
     elif action == "transform_object":
         name = arguments.get("name")
         if not isinstance(name, str) or not name or len(name) > 255:
@@ -165,6 +184,64 @@ def validate_command(payload: Mapping[str, Any]) -> Command:
             "depth": float(depth),
             "threshold": float(threshold),
             "resolution": resolution,
+        }
+    elif action == "thicken_mouth_line":
+        object_name = arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ProtocolError("thicken_mouth_line.object_name must be a non-empty string")
+        points = arguments.get("points")
+        if (
+            not isinstance(points, Sequence)
+            or isinstance(points, (str, bytes))
+            or not 2 <= len(points) <= 16
+        ):
+            raise ProtocolError("thicken_mouth_line.points must contain 2 to 16 points")
+        normalized_points = [_vector3(point, "thicken_mouth_line.points") for point in points]
+        normal = _vector3(arguments.get("normal"), "normal")
+        radius = arguments.get("radius")
+        amount = arguments.get("amount")
+        surface_window = arguments.get("surface_window", radius)
+        if not isinstance(radius, Real) or isinstance(radius, bool) or not 0 < radius <= 1:
+            raise ProtocolError("thicken_mouth_line.radius must be between 0 and 1")
+        if not isinstance(amount, Real) or isinstance(amount, bool) or not 0 < amount <= 1:
+            raise ProtocolError("thicken_mouth_line.amount must be between 0 and 1")
+        if (
+            not isinstance(surface_window, Real)
+            or isinstance(surface_window, bool)
+            or not 0 < surface_window <= 1
+        ):
+            raise ProtocolError("thicken_mouth_line.surface_window must be between 0 and 1")
+        normal_threshold = arguments.get("normal_threshold", 0.15)
+        if (
+            not isinstance(normal_threshold, Real)
+            or isinstance(normal_threshold, bool)
+            or not -1 <= normal_threshold <= 1
+        ):
+            raise ProtocolError("thicken_mouth_line.normal_threshold must be between -1 and 1")
+        dry_run = arguments.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            raise ProtocolError("thicken_mouth_line.dry_run must be a boolean")
+        allowed = {
+            "object_name",
+            "points",
+            "normal",
+            "radius",
+            "amount",
+            "surface_window",
+            "normal_threshold",
+            "dry_run",
+        }
+        if set(arguments) - allowed:
+            raise ProtocolError("thicken_mouth_line contains unknown arguments")
+        arguments = {
+            "object_name": object_name,
+            "points": normalized_points,
+            "normal": normal,
+            "radius": float(radius),
+            "amount": float(amount),
+            "surface_window": float(surface_window),
+            "normal_threshold": float(normal_threshold),
+            "dry_run": dry_run,
         }
     elif action == "reload_core":
         release_path = arguments.get("release_path")
