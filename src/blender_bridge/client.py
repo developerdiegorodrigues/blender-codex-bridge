@@ -8,7 +8,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .protocol import Command, PROTOCOL_VERSION
+from .protocol import PROTOCOL_VERSION, validate_command
 from .runtime import RuntimePaths
 
 
@@ -43,10 +43,13 @@ class BridgeClient:
         return self._request("GET", "/v1/health")
 
     def command(self, action: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
-        command = Command(
-            request_id=str(uuid.uuid4()),
-            action=action,
-            arguments=arguments or {},
+        command = validate_command(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "request_id": str(uuid.uuid4()),
+                "action": action,
+                "arguments": arguments or {},
+            }
         )
         payload = command.as_dict()
         payload["protocol_version"] = PROTOCOL_VERSION

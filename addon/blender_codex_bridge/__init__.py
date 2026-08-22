@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import re
@@ -22,7 +23,7 @@ import bpy
 bl_info = {
     "name": "Blender Codex Bridge",
     "author": "NoctisLab",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (4, 0, 0),
     "location": "Preferences > Add-ons",
     "description": "Authenticated local bridge for structured Codex tools",
@@ -36,6 +37,7 @@ ALLOWED_ACTIONS = {
     "undo",
     "save_checkpoint",
     "capture_viewport",
+    "create_hemisphere",
 }
 MAX_REQUEST_BYTES = 256 * 1024
 COMMAND_TIMEOUT_SECONDS = 30.0
@@ -189,6 +191,30 @@ def _validate_payload(payload: object) -> None:
             raise ValueError("save_checkpoint.label must be a non-empty string")
         if set(arguments) - {"label"}:
             raise ValueError("save_checkpoint contains unknown arguments")
+    if action == "create_hemisphere":
+        name = arguments.get("name")
+        if not isinstance(name, str) or not name or len(name) > 255:
+            raise ValueError("create_hemisphere requires a valid name")
+        _validate_vector(arguments, "location")
+        if "location" not in arguments:
+            raise ValueError("create_hemisphere requires a location")
+        radius = arguments.get("radius")
+        depth = arguments.get("depth", radius)
+        if isinstance(radius, bool) or not isinstance(radius, (int, float)) or not 0 < radius <= 10:
+            raise ValueError("create_hemisphere.radius must be between 0 and 10")
+        if isinstance(depth, bool) or not isinstance(depth, (int, float)) or not 0 < depth <= 10:
+            raise ValueError("create_hemisphere.depth must be between 0 and 10")
+        if arguments.get("direction", "-Y") not in {"+X", "-X", "+Y", "-Y", "+Z", "-Z"}:
+            raise ValueError("create_hemisphere.direction is invalid")
+        segments = arguments.get("segments", 48)
+        rings = arguments.get("rings", 12)
+        if isinstance(segments, bool) or not isinstance(segments, int) or not 12 <= segments <= 128:
+            raise ValueError("create_hemisphere.segments must be between 12 and 128")
+        if isinstance(rings, bool) or not isinstance(rings, int) or not 4 <= rings <= 64:
+            raise ValueError("create_hemisphere.rings must be between 4 and 64")
+        allowed = {"name", "location", "radius", "depth", "direction", "segments", "rings"}
+        if set(arguments) - allowed:
+            raise ValueError("create_hemisphere contains unknown arguments")
 
 
 def _scene_summary() -> dict[str, Any]:
@@ -264,6 +290,105 @@ def _capture_viewport(request_id: str) -> dict[str, Any]:
         scene.render.filepath = previous_path
 
 
+def _create_hemisphere(arguments: dict[str, Any]) -> dict[str, Any]:
+    name = arguments["name"]
+    if bpy.data.objects.get(name) is not None:
+        raise ValueError(f"object already exists: {name}")
+
+    radius = float(arguments["radius"])
+    depth = float(arguments.get("depth", radius))
+    segments = int(arguments.get("segments", 48))
+    rings = int(arguments.get("rings", 12))
+    direction_name = arguments.get("direction", "-Y")
+    direction = {
+        "+X": (1.0, 0.0, 0.0),
+        "-X": (-1.0, 0.0, 0.0),
+        "+Y": (0.0, 1.0, 0.0),
+        "-Y": (0.0, -1.0, 0.0),
+        "+Z": (0.0, 0.0, 1.0),
+        "-Z": (0.0, 0.0, -1.0),
+    }[direction_name]
+    if direction_name in {"+X", "-X"}:
+        tangent_u, tangent_v = (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)
+    elif direction_name in {"+Y", "-Y"}:
+        tangent_u, tangent_v = (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)
+    else:
+        tangent_u, tangent_v = (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)
+
+    vertices: list[tuple[float, float, float]] = [
+        tuple(component * depth for component in direction)
+    ]
+    for ring in range(1, rings + 1):
+        theta = (math.pi * 0.5) * ring / rings
+        radial = radius * math.sin(theta)
+        outward = depth * math.cos(theta)
+        for segment in range(segments):
+            phi = math.tau * segment / segments
+            vertices.append(
+                tuple(
+                    tangent_u[axis] * radial * math.cos(phi)
+                    + tangent_v[axis] * radial * math.sin(phi)
+                    + direction[axis] * outward
+                    for axis in range(3)
+                )
+            )
+
+    faces: list[tuple[int, ...]] = []
+    first_ring = 1
+    for segment in range(segments):
+        next_segment = (segment + 1) % segments
+        faces.append((0, first_ring + segment, first_ring + next_segment))
+    for ring in range(rings - 1):
+        current = 1 + ring * segments
+        following = current + segments
+        for segment in range(segments):
+            next_segment = (segment + 1) % segments
+            faces.append(
+                (
+                    current + segment,
+                    following + segment,
+                    following + next_segment,
+                    current + next_segment,
+                )
+            )
+    cap_center = len(vertices)
+    vertices.append((0.0, 0.0, 0.0))
+    equator = 1 + (rings - 1) * segments
+    for segment in range(segments):
+        next_segment = (segment + 1) % segments
+        faces.append((cap_center, equator + next_segment, equator + segment))
+
+    mesh = bpy.data.meshes.new(f"{name}.Mesh")
+    mesh.from_pydata(vertices, [], faces)
+    mesh.validate(verbose=False)
+    mesh.update(calc_edges=True)
+    obj = bpy.data.objects.new(name, mesh)
+    obj.location = arguments["location"]
+    obj["blender_codex_role"] = "pupil"
+    obj["blender_codex_shape"] = "hemisphere"
+    bpy.context.collection.objects.link(obj)
+
+    curved_face_count = segments + (rings - 1) * segments
+    for polygon in mesh.polygons[:curved_face_count]:
+        polygon.use_smooth = True
+
+    material = bpy.data.materials.get("Pupil") or bpy.data.materials.new("Pupil")
+    material.diffuse_color = (0.01, 0.01, 0.01, 1.0)
+    obj.data.materials.append(material)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.context.view_layer.update()
+    return {
+        "name": obj.name,
+        "location": list(obj.location),
+        "radius": radius,
+        "depth": depth,
+        "direction": direction_name,
+        "vertices": len(mesh.vertices),
+        "faces": len(mesh.polygons),
+    }
+
+
 def _execute(payload: dict[str, Any]) -> object:
     action = payload["action"]
     arguments = payload.get("arguments", {})
@@ -277,6 +402,8 @@ def _execute(payload: dict[str, Any]) -> object:
         return _save_checkpoint(arguments)
     if action == "capture_viewport":
         return _capture_viewport(payload["request_id"])
+    if action == "create_hemisphere":
+        return _create_hemisphere(arguments)
     raise ValueError(f"unsupported action: {action}")
 
 

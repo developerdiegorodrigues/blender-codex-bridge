@@ -13,6 +13,7 @@ teclado fica reservada para uma etapa posterior.
 - fila que executa chamadas `bpy` somente na thread principal do Blender;
 - parada de emergencia por arquivo sentinela;
 - cliente CLI para diagnostico, parada, retomada e inspecao da cena.
+- criacao de hemisferios fechados para detalhes como pupilas.
 
 O adaptador MCP sera construido sobre este protocolo depois que a comunicacao
 com o Blender estiver validada.
@@ -32,7 +33,7 @@ Primeiro gere o pacote (um pacote pronto tambem pode existir em `dist/`):
 
 ```bash
 mkdir -p dist
-(cd addon && zip -r ../dist/blender-codex-bridge-addon-0.1.0.zip blender_codex_bridge -x '*__pycache__*')
+(cd addon && zip -r ../dist/blender-codex-bridge-addon-0.2.0.zip blender_codex_bridge -x '*__pycache__*')
 ```
 
 No Blender aberto:
@@ -40,7 +41,7 @@ No Blender aberto:
 1. Salve o modelo atual antes dos testes.
 2. Abra `Edit > Preferences > Add-ons`.
 3. Clique em `Install...`.
-4. Selecione `dist/blender-codex-bridge-addon-0.1.0.zip`.
+4. Selecione `dist/blender-codex-bridge-addon-0.2.0.zip`.
 5. Marque **Interface: Blender Codex Bridge** para habilitar o add-on.
 
 Nao e necessario reiniciar o Blender. Ao marcar o add-on, ele inicia o servidor
@@ -51,6 +52,10 @@ Com o add-on ativo:
 ```bash
 blender-agent status
 blender-agent scene
+blender-agent checkpoint before-change
+blender-agent capture
+blender-agent hemisphere --name Pupil.L \
+  --location 0.075 -0.205 0.22 --radius 0.012 --direction=-Y
 blender-agent stop
 blender-agent resume
 ```

@@ -19,6 +19,15 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("status", help="show bridge health")
     subparsers.add_parser("scene", help="summarize the open Blender scene")
+    checkpoint = subparsers.add_parser("checkpoint", help="save a timestamped copy of the scene")
+    checkpoint.add_argument("label", nargs="?", default="checkpoint")
+    subparsers.add_parser("capture", help="capture the active 3D viewport")
+    hemisphere = subparsers.add_parser("hemisphere", help="create a closed hemisphere")
+    hemisphere.add_argument("--name", required=True)
+    hemisphere.add_argument("--location", nargs=3, type=float, metavar=("X", "Y", "Z"), required=True)
+    hemisphere.add_argument("--radius", type=float, required=True)
+    hemisphere.add_argument("--depth", type=float)
+    hemisphere.add_argument("--direction", choices=("+X", "-X", "+Y", "-Y", "+Z", "-Z"), default="-Y")
     subparsers.add_parser("stop", help="block queued and future commands")
     subparsers.add_parser("resume", help="remove the emergency stop sentinel")
     return parser
@@ -40,7 +49,21 @@ def main(argv: list[str] | None = None) -> int:
             _print(BridgeClient(runtime).health())
         elif args.command == "scene":
             _print(BridgeClient(runtime).command("get_scene_summary"))
-    except (OSError, RuntimeError) as exc:
+        elif args.command == "checkpoint":
+            _print(BridgeClient(runtime).command("save_checkpoint", {"label": args.label}))
+        elif args.command == "capture":
+            _print(BridgeClient(runtime).command("capture_viewport"))
+        elif args.command == "hemisphere":
+            arguments = {
+                "name": args.name,
+                "location": args.location,
+                "radius": args.radius,
+                "direction": args.direction,
+            }
+            if args.depth is not None:
+                arguments["depth"] = args.depth
+            _print(BridgeClient(runtime).command("create_hemisphere", arguments))
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0
