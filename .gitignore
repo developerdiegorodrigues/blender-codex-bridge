@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments and local configuration
+.venv/
+venv/
+.env
+.env.*
+
+# Build and packaging output
+build/
+dist/
+
+# Blender files are user data, not source code
+*.blend
+*.blend1
+*.blend2
+*.blend@
+
+# Bridge runtime artifacts
+.runtime/
+STOP
+connection.json
+token
+captures/
+checkpoints/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
