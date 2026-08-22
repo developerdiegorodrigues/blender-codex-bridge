@@ -20,6 +20,10 @@ WRITE_ACTIONS = frozenset(
         "create_hemisphere",
         "create_image_relief",
         "import_stl_assembly",
+        "flatten_mesh_region",
+        "seal_mesh_patch",
+        "restore_mesh_data",
+        "simplify_mesh",
         "thicken_mouth_line",
     }
 )
@@ -214,6 +218,80 @@ def validate_command(payload: Mapping[str, Any]) -> Command:
         if set(arguments) - {"name", "parts", "location", "scale"}:
             raise ProtocolError("import_stl_assembly contains unknown arguments")
         arguments = {"name": name, "parts": normalized_parts, "location": location, "scale": float(scale)}
+    elif action == "flatten_mesh_region":
+        object_name = arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ProtocolError("flatten_mesh_region.object_name must be a non-empty string")
+        bounds_min = _vector3(arguments.get("bounds_min"), "bounds_min")
+        bounds_max = _vector3(arguments.get("bounds_max"), "bounds_max")
+        if any(bounds_min[index] >= bounds_max[index] for index in range(3)):
+            raise ProtocolError("flatten_mesh_region bounds are invalid")
+        axis = arguments.get("axis")
+        if axis not in {"X", "Y", "Z"}:
+            raise ProtocolError("flatten_mesh_region.axis must be X, Y, or Z")
+        plane = arguments.get("plane")
+        if not isinstance(plane, Real) or isinstance(plane, bool):
+            raise ProtocolError("flatten_mesh_region.plane must be a number")
+        direction = arguments.get("direction")
+        if direction not in {"positive", "negative", "both"}:
+            raise ProtocolError("flatten_mesh_region.direction is invalid")
+        allowed = {"object_name", "bounds_min", "bounds_max", "axis", "plane", "direction"}
+        if set(arguments) - allowed:
+            raise ProtocolError("flatten_mesh_region contains unknown arguments")
+        arguments = {"object_name": object_name, "bounds_min": bounds_min, "bounds_max": bounds_max, "axis": axis, "plane": float(plane), "direction": direction}
+    elif action == "seal_mesh_patch":
+        object_name = arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ProtocolError("seal_mesh_patch.object_name must be a non-empty string")
+        bounds_min = _vector3(arguments.get("bounds_min"), "bounds_min")
+        bounds_max = _vector3(arguments.get("bounds_max"), "bounds_max")
+        if any(bounds_min[index] >= bounds_max[index] for index in range(3)):
+            raise ProtocolError("seal_mesh_patch bounds are invalid")
+        axis = arguments.get("axis")
+        if axis not in {"X", "Y", "Z"}:
+            raise ProtocolError("seal_mesh_patch.axis must be X, Y, or Z")
+        plane, depth = arguments.get("plane"), arguments.get("depth")
+        if not isinstance(plane, Real) or isinstance(plane, bool):
+            raise ProtocolError("seal_mesh_patch.plane must be a number")
+        if not isinstance(depth, Real) or isinstance(depth, bool) or not 0 < depth <= 10:
+            raise ProtocolError("seal_mesh_patch.depth must be between 0 and 10")
+        direction = arguments.get("direction")
+        if direction not in {"positive", "negative"}:
+            raise ProtocolError("seal_mesh_patch.direction is invalid")
+        allowed = {"object_name", "bounds_min", "bounds_max", "axis", "plane", "depth", "direction"}
+        if set(arguments) - allowed:
+            raise ProtocolError("seal_mesh_patch contains unknown arguments")
+        arguments = {"object_name": object_name, "bounds_min": bounds_min, "bounds_max": bounds_max, "axis": axis, "plane": float(plane), "depth": float(depth), "direction": direction}
+    elif action == "restore_mesh_data":
+        checkpoint_path = arguments.get("checkpoint_path")
+        object_names = arguments.get("object_names")
+        if not isinstance(checkpoint_path, str) or not checkpoint_path or len(checkpoint_path) > 4096:
+            raise ProtocolError("restore_mesh_data.checkpoint_path must be a non-empty string")
+        if (
+            not isinstance(object_names, Sequence)
+            or isinstance(object_names, (str, bytes))
+            or not 1 <= len(object_names) <= 20
+            or any(not isinstance(name, str) or not name or len(name) > 255 for name in object_names)
+        ):
+            raise ProtocolError("restore_mesh_data.object_names must contain 1 to 20 valid names")
+        if len(set(object_names)) != len(object_names):
+            raise ProtocolError("restore_mesh_data.object_names must be unique")
+        if set(arguments) != {"checkpoint_path", "object_names"}:
+            raise ProtocolError("restore_mesh_data contains unknown arguments")
+        arguments = {"checkpoint_path": checkpoint_path, "object_names": list(object_names)}
+    elif action == "simplify_mesh":
+        object_name = arguments.get("object_name")
+        ratio = arguments.get("ratio", 0.1)
+        cleanup = arguments.get("cleanup", True)
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ProtocolError("simplify_mesh.object_name must be a non-empty string")
+        if not isinstance(ratio, Real) or isinstance(ratio, bool) or not 0.02 <= ratio <= 1:
+            raise ProtocolError("simplify_mesh.ratio must be between 0.02 and 1")
+        if not isinstance(cleanup, bool):
+            raise ProtocolError("simplify_mesh.cleanup must be a boolean")
+        if set(arguments) - {"object_name", "ratio", "cleanup"}:
+            raise ProtocolError("simplify_mesh contains unknown arguments")
+        arguments = {"object_name": object_name, "ratio": float(ratio), "cleanup": cleanup}
     elif action == "thicken_mouth_line":
         object_name = arguments.get("object_name")
         if not isinstance(object_name, str) or not object_name or len(object_name) > 255:

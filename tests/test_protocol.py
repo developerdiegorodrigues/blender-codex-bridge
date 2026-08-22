@@ -156,6 +156,54 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(command.arguments["parts"][0]["name"], "Glasses.Frame")
         self.assertEqual(command.arguments["scale"], 0.002)
 
+    def test_accepts_local_mesh_flattening(self):
+        command = validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": "request-flatten",
+                "action": "flatten_mesh_region",
+                "arguments": {"object_name": "Glasses.LeftLeg", "bounds_min": [37, 45, 0], "bounds_max": [40, 70, 20], "axis": "X", "plane": 37.4, "direction": "positive"},
+            }
+        )
+        self.assertEqual(command.arguments["plane"], 37.4)
+
+    def test_accepts_mesh_patch_sealing(self):
+        command = validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": "request-seal",
+                "action": "seal_mesh_patch",
+                "arguments": {"object_name": "Glasses.RightLeg", "bounds_min": [-105, 6, -10], "bounds_max": [-104, 35, 18], "axis": "X", "plane": -104.2, "depth": 0.4, "direction": "negative"},
+            }
+        )
+        self.assertEqual(command.arguments["depth"], 0.4)
+
+    def test_accepts_mesh_data_restoration(self):
+        command = validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": "request-restore-mesh",
+                "action": "restore_mesh_data",
+                "arguments": {
+                    "checkpoint_path": "/tmp/blender-codex-bridge/checkpoints/before.blend",
+                    "object_names": ["Glasses.LeftLeg", "Glasses.RightLeg"],
+                },
+            }
+        )
+        self.assertEqual(command.arguments["object_names"], ["Glasses.LeftLeg", "Glasses.RightLeg"])
+
+    def test_accepts_mesh_simplification(self):
+        command = validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": "request-simplify",
+                "action": "simplify_mesh",
+                "arguments": {"object_name": "Scanned Figurine", "ratio": 0.1},
+            }
+        )
+        self.assertEqual(command.arguments["ratio"], 0.1)
+        self.assertTrue(command.arguments["cleanup"])
+
     def test_rejects_an_invalid_core_checksum(self):
         with self.assertRaises(ProtocolError):
             validate_command(

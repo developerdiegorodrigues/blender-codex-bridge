@@ -104,6 +104,28 @@ def build_parser() -> argparse.ArgumentParser:
     assembly.add_argument("--part", action="append", nargs=2, metavar=("NAME", "PATH"), required=True)
     assembly.add_argument("--location", nargs=3, type=float, metavar=("X", "Y", "Z"), required=True)
     assembly.add_argument("--scale", type=float, required=True)
+    flatten = subparsers.add_parser("flatten", help="project an embossed mesh region onto a local plane")
+    flatten.add_argument("--object", dest="object_name", required=True)
+    flatten.add_argument("--min", dest="bounds_min", nargs=3, type=float, required=True)
+    flatten.add_argument("--max", dest="bounds_max", nargs=3, type=float, required=True)
+    flatten.add_argument("--axis", choices=("X", "Y", "Z"), required=True)
+    flatten.add_argument("--plane", type=float, required=True)
+    flatten.add_argument("--direction", choices=("positive", "negative", "both"), required=True)
+    seal = subparsers.add_parser("seal", help="fuse a flat cap over an engraved mesh patch")
+    seal.add_argument("--object", dest="object_name", required=True)
+    seal.add_argument("--min", dest="bounds_min", nargs=3, type=float, required=True)
+    seal.add_argument("--max", dest="bounds_max", nargs=3, type=float, required=True)
+    seal.add_argument("--axis", choices=("X", "Y", "Z"), required=True)
+    seal.add_argument("--plane", type=float, required=True)
+    seal.add_argument("--depth", type=float, required=True)
+    seal.add_argument("--direction", choices=("positive", "negative"), required=True)
+    restore_mesh = subparsers.add_parser("restore-mesh", help="restore mesh data from a bridge checkpoint")
+    restore_mesh.add_argument("--checkpoint", required=True)
+    restore_mesh.add_argument("--object", dest="object_names", action="append", required=True)
+    simplify = subparsers.add_parser("simplify", help="decimate and clean a mesh")
+    simplify.add_argument("--object", dest="object_name", required=True)
+    simplify.add_argument("--ratio", type=float, default=0.1)
+    simplify.add_argument("--no-cleanup", action="store_true")
     mouth = subparsers.add_parser("mouth", help="thicken a mouth line by deforming the target mesh")
     mouth.add_argument("--object", dest="object_name", required=True)
     mouth.add_argument("--point", action="append", nargs=3, type=float, metavar=("X", "Y", "Z"), required=True)
@@ -202,6 +224,14 @@ def main(argv: list[str] | None = None) -> int:
                     },
                 )
             )
+        elif args.command == "flatten":
+            _print(BridgeClient(runtime).command("flatten_mesh_region", {"object_name": args.object_name, "bounds_min": args.bounds_min, "bounds_max": args.bounds_max, "axis": args.axis, "plane": args.plane, "direction": args.direction}))
+        elif args.command == "seal":
+            _print(BridgeClient(runtime).command("seal_mesh_patch", {"object_name": args.object_name, "bounds_min": args.bounds_min, "bounds_max": args.bounds_max, "axis": args.axis, "plane": args.plane, "depth": args.depth, "direction": args.direction}))
+        elif args.command == "restore-mesh":
+            _print(BridgeClient(runtime).command("restore_mesh_data", {"checkpoint_path": args.checkpoint, "object_names": args.object_names}))
+        elif args.command == "simplify":
+            _print(BridgeClient(runtime).command("simplify_mesh", {"object_name": args.object_name, "ratio": args.ratio, "cleanup": not args.no_cleanup}))
         elif args.command == "mouth":
             arguments = {
                 "object_name": args.object_name,

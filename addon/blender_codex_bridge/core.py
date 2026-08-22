@@ -23,7 +23,7 @@ from mathutils import Matrix, Vector
 
 
 CORE_API_VERSION = 1
-CORE_VERSION = "0.4.6"
+CORE_VERSION = "0.4.14"
 
 
 def self_test() -> dict[str, object]:
@@ -34,6 +34,10 @@ def self_test() -> dict[str, object]:
         "create_hemisphere",
         "create_image_relief",
         "import_stl_assembly",
+        "flatten_mesh_region",
+        "seal_mesh_patch",
+        "restore_mesh_data",
+        "simplify_mesh",
         "thicken_mouth_line",
     }
     missing = required - ALLOWED_ACTIONS
@@ -62,6 +66,10 @@ ALLOWED_ACTIONS = {
     "create_hemisphere",
     "create_image_relief",
     "import_stl_assembly",
+    "flatten_mesh_region",
+    "seal_mesh_patch",
+    "restore_mesh_data",
+    "simplify_mesh",
     "render_workbench_preview",
     "get_mesh_components",
     "thicken_mouth_line",
@@ -305,6 +313,75 @@ def _validate_payload(payload: object) -> None:
             raise ValueError("import_stl_assembly.scale must be between 0.00001 and 100")
         if set(arguments) - {"name", "parts", "location", "scale"}:
             raise ValueError("import_stl_assembly contains unknown arguments")
+    if action == "flatten_mesh_region":
+        object_name = arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ValueError("flatten_mesh_region requires a valid object_name")
+        for field_name in ("bounds_min", "bounds_max"):
+            _validate_vector(arguments, field_name)
+            if field_name not in arguments:
+                raise ValueError(f"flatten_mesh_region requires {field_name}")
+        if any(arguments["bounds_min"][index] >= arguments["bounds_max"][index] for index in range(3)):
+            raise ValueError("flatten_mesh_region bounds are invalid")
+        axis = arguments.get("axis")
+        if axis not in {"X", "Y", "Z"}:
+            raise ValueError("flatten_mesh_region.axis must be X, Y, or Z")
+        plane = arguments.get("plane")
+        if isinstance(plane, bool) or not isinstance(plane, (int, float)):
+            raise ValueError("flatten_mesh_region.plane must be a number")
+        if arguments.get("direction") not in {"positive", "negative", "both"}:
+            raise ValueError("flatten_mesh_region.direction is invalid")
+        if set(arguments) - {"object_name", "bounds_min", "bounds_max", "axis", "plane", "direction"}:
+            raise ValueError("flatten_mesh_region contains unknown arguments")
+    if action == "seal_mesh_patch":
+        object_name = arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ValueError("seal_mesh_patch requires a valid object_name")
+        for field_name in ("bounds_min", "bounds_max"):
+            _validate_vector(arguments, field_name)
+            if field_name not in arguments:
+                raise ValueError(f"seal_mesh_patch requires {field_name}")
+        if any(arguments["bounds_min"][index] >= arguments["bounds_max"][index] for index in range(3)):
+            raise ValueError("seal_mesh_patch bounds are invalid")
+        if arguments.get("axis") not in {"X", "Y", "Z"}:
+            raise ValueError("seal_mesh_patch.axis must be X, Y, or Z")
+        plane = arguments.get("plane")
+        depth = arguments.get("depth")
+        if isinstance(plane, bool) or not isinstance(plane, (int, float)):
+            raise ValueError("seal_mesh_patch.plane must be a number")
+        if isinstance(depth, bool) or not isinstance(depth, (int, float)) or not 0 < depth <= 10:
+            raise ValueError("seal_mesh_patch.depth must be between 0 and 10")
+        if arguments.get("direction") not in {"positive", "negative"}:
+            raise ValueError("seal_mesh_patch.direction is invalid")
+        if set(arguments) - {"object_name", "bounds_min", "bounds_max", "axis", "plane", "depth", "direction"}:
+            raise ValueError("seal_mesh_patch contains unknown arguments")
+    if action == "restore_mesh_data":
+        checkpoint_path = arguments.get("checkpoint_path")
+        object_names = arguments.get("object_names")
+        if not isinstance(checkpoint_path, str) or not checkpoint_path or len(checkpoint_path) > 4096:
+            raise ValueError("restore_mesh_data requires a checkpoint_path")
+        if (
+            not isinstance(object_names, list)
+            or not 1 <= len(object_names) <= 20
+            or any(not isinstance(name, str) or not name or len(name) > 255 for name in object_names)
+        ):
+            raise ValueError("restore_mesh_data.object_names must contain 1 to 20 valid names")
+        if len(set(object_names)) != len(object_names):
+            raise ValueError("restore_mesh_data.object_names must be unique")
+        if set(arguments) != {"checkpoint_path", "object_names"}:
+            raise ValueError("restore_mesh_data contains unknown arguments")
+    if action == "simplify_mesh":
+        object_name = arguments.get("object_name")
+        ratio = arguments.get("ratio", 0.1)
+        cleanup = arguments.get("cleanup", True)
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ValueError("simplify_mesh requires a valid object_name")
+        if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not 0.02 <= ratio <= 1:
+            raise ValueError("simplify_mesh.ratio must be between 0.02 and 1")
+        if not isinstance(cleanup, bool):
+            raise ValueError("simplify_mesh.cleanup must be a boolean")
+        if set(arguments) - {"object_name", "ratio", "cleanup"}:
+            raise ValueError("simplify_mesh contains unknown arguments")
     if action == "thicken_mouth_line":
         object_name = arguments.get("object_name")
         if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
@@ -857,6 +934,176 @@ def _import_stl_assembly(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _flatten_mesh_region(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Remove a local relief by projecting its outer vertices onto a plane."""
+    obj = bpy.data.objects.get(arguments["object_name"])
+    if obj is None or obj.type != "MESH":
+        raise ValueError(f"mesh object not found: {arguments['object_name']}")
+    axis = {"X": 0, "Y": 1, "Z": 2}[arguments["axis"]]
+    bounds_min = Vector(arguments["bounds_min"])
+    bounds_max = Vector(arguments["bounds_max"])
+    plane = float(arguments["plane"])
+    direction = arguments["direction"]
+    affected = 0
+    for vertex in obj.data.vertices:
+        coordinate = vertex.co
+        if any(coordinate[index] < bounds_min[index] or coordinate[index] > bounds_max[index] for index in range(3)):
+            continue
+        if direction == "both" or (direction == "positive" and coordinate[axis] > plane) or (direction == "negative" and coordinate[axis] < plane):
+            coordinate[axis] = plane
+            affected += 1
+    mesh_edit = bmesh.new()
+    mesh_edit.from_mesh(obj.data)
+    bmesh.ops.dissolve_degenerate(mesh_edit, dist=1e-7, edges=mesh_edit.edges[:])
+    bmesh.ops.recalc_face_normals(mesh_edit, faces=mesh_edit.faces[:])
+    if not affected:
+        mesh_edit.free()
+        raise ValueError("flatten_mesh_region did not affect any vertices")
+    mesh_edit.to_mesh(obj.data)
+    mesh_edit.free()
+    obj.data.update()
+    obj["blender_codex_flattened_regions"] = int(obj.get("blender_codex_flattened_regions", 0)) + 1
+    bpy.context.view_layer.update()
+    return {
+        "object": obj.name,
+        "affected_vertices": affected,
+        "axis": arguments["axis"],
+        "plane": plane,
+    }
+
+
+def _seal_mesh_patch(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Fuse a thin local rectangular cap into a mesh to close an engraved mark."""
+    obj = bpy.data.objects.get(arguments["object_name"])
+    if obj is None or obj.type != "MESH":
+        raise ValueError(f"mesh object not found: {arguments['object_name']}")
+    if obj.data.users > 1:
+        obj.data = obj.data.copy()
+    for modifier in tuple(obj.modifiers):
+        if modifier.name.startswith("Bridge Seal Patch"):
+            obj.modifiers.remove(modifier)
+    axis = {"X": 0, "Y": 1, "Z": 2}[arguments["axis"]]
+    lower = Vector(arguments["bounds_min"])
+    upper = Vector(arguments["bounds_max"])
+    plane = float(arguments["plane"])
+    depth = float(arguments["depth"])
+    if arguments["direction"] == "positive":
+        lower[axis], upper[axis] = plane, plane + depth
+    else:
+        lower[axis], upper[axis] = plane - depth, plane
+    vertices = [
+        (x, y, z)
+        for x in (lower.x, upper.x)
+        for y in (lower.y, upper.y)
+        for z in (lower.z, upper.z)
+    ]
+    faces = [(0, 1, 3, 2), (4, 6, 7, 5), (0, 4, 5, 1), (2, 3, 7, 6), (0, 2, 6, 4), (1, 5, 7, 3)]
+    patch_mesh = bpy.data.meshes.new("Bridge.SealPatch.Mesh")
+    patch_mesh.from_pydata(vertices, [], faces)
+    patch = bpy.data.objects.new("Bridge.SealPatch", patch_mesh)
+    bpy.context.collection.objects.link(patch)
+    patch.matrix_world = obj.matrix_world.copy()
+    modifier = None
+    try:
+        modifier = obj.modifiers.new(name="Bridge Seal Patch", type="BOOLEAN")
+        modifier.operation = "UNION"
+        modifier.solver = "EXACT"
+        modifier.object = patch
+        for selected in bpy.context.selected_objects:
+            selected.select_set(False)
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.context.view_layer.update()
+        bpy.ops.object.modifier_apply(modifier=modifier.name)
+    finally:
+        if modifier is not None and obj.modifiers.get(modifier.name) is not None:
+            obj.modifiers.remove(modifier)
+        bpy.data.objects.remove(patch, do_unlink=True)
+    obj.data.validate(verbose=False)
+    obj.data.update()
+    obj["blender_codex_sealed_patches"] = int(obj.get("blender_codex_sealed_patches", 0)) + 1
+    bpy.context.view_layer.update()
+    return {"object": obj.name, "axis": arguments["axis"], "plane": plane, "depth": depth}
+
+
+def _restore_mesh_data(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Restore selected mesh datablocks from a bridge checkpoint, keeping object transforms."""
+    assert STATE is not None
+    checkpoint = Path(arguments["checkpoint_path"]).expanduser().resolve()
+    checkpoint_root = (STATE.runtime / "checkpoints").resolve()
+    if checkpoint.suffix.lower() != ".blend" or not checkpoint.is_file() or not checkpoint.is_relative_to(checkpoint_root):
+        raise ValueError("checkpoint_path must reference a bridge checkpoint")
+    names = list(arguments["object_names"])
+    targets = []
+    for name in names:
+        target = bpy.data.objects.get(name)
+        if target is None or target.type != "MESH":
+            raise ValueError(f"mesh object not found: {name}")
+        targets.append(target)
+    with bpy.data.libraries.load(str(checkpoint), link=False) as (source, destination):
+        missing = [name for name in names if name not in source.objects]
+        if missing:
+            raise ValueError(f"checkpoint is missing mesh objects: {missing}")
+        destination.objects = names
+    restored = []
+    for name, target, loaded in zip(names, targets, destination.objects):
+        if loaded is None or loaded.type != "MESH":
+            raise ValueError(f"checkpoint object is not a mesh: {name}")
+        target.data = loaded.data
+        bpy.data.objects.remove(loaded, do_unlink=True)
+        target.data.name = f"{name}.Mesh"
+        target.data.update()
+        restored.append({"name": name, "vertices": len(target.data.vertices), "faces": len(target.data.polygons)})
+    bpy.context.view_layer.update()
+    return {"checkpoint": str(checkpoint), "restored": restored}
+
+
+def _simplify_mesh(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Apply a collapse decimator and conservative mesh cleanup to one object."""
+    obj = bpy.data.objects.get(arguments["object_name"])
+    if obj is None or obj.type != "MESH":
+        raise ValueError(f"mesh object not found: {arguments['object_name']}")
+    mesh = obj.data
+    if mesh.users > 1:
+        obj.data = mesh.copy()
+        mesh = obj.data
+    before = {"vertices": len(mesh.vertices), "edges": len(mesh.edges), "faces": len(mesh.polygons)}
+    ratio = float(arguments.get("ratio", 0.1))
+    modifier = obj.modifiers.new(name="Bridge Decimate", type="DECIMATE")
+    modifier.decimate_type = "COLLAPSE"
+    modifier.ratio = ratio
+    for selected in bpy.context.selected_objects:
+        selected.select_set(False)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.context.view_layer.update()
+    bpy.ops.object.modifier_apply(modifier=modifier.name)
+
+    removed_loose = 0
+    if arguments.get("cleanup", True):
+        edit = bmesh.new()
+        edit.from_mesh(mesh)
+        bmesh.ops.remove_doubles(edit, verts=edit.verts[:], dist=1e-7)
+        loose = [vert for vert in edit.verts if not vert.link_edges]
+        removed_loose = len(loose)
+        if loose:
+            bmesh.ops.delete(edit, geom=loose, context="VERTS")
+        bmesh.ops.dissolve_degenerate(edit, dist=1e-7, edges=edit.edges[:])
+        bmesh.ops.recalc_face_normals(edit, faces=edit.faces[:])
+        edit.to_mesh(mesh)
+        edit.free()
+    mesh.validate(verbose=False)
+    mesh.update(calc_edges=True)
+    quality = bmesh.new()
+    quality.from_mesh(mesh)
+    non_manifold = sum(1 for edge in quality.edges if len(edge.link_faces) != 2)
+    quality.free()
+    after = {"vertices": len(mesh.vertices), "edges": len(mesh.edges), "faces": len(mesh.polygons)}
+    obj["blender_codex_simplified"] = {"ratio": ratio, "cleanup": bool(arguments.get("cleanup", True))}
+    bpy.context.view_layer.update()
+    return {"object": obj.name, "ratio": ratio, "before": before, "after": after, "removed_loose_vertices": removed_loose, "non_manifold_edges": non_manifold}
+
+
 def _point_to_polyline_distance(
     point: Vector,
     points: list[Vector],
@@ -1061,6 +1308,14 @@ def _execute(payload: dict[str, Any]) -> object:
         return _create_image_relief(arguments)
     if action == "import_stl_assembly":
         return _import_stl_assembly(arguments)
+    if action == "flatten_mesh_region":
+        return _flatten_mesh_region(arguments)
+    if action == "seal_mesh_patch":
+        return _seal_mesh_patch(arguments)
+    if action == "restore_mesh_data":
+        return _restore_mesh_data(arguments)
+    if action == "simplify_mesh":
+        return _simplify_mesh(arguments)
     if action == "thicken_mouth_line":
         return _thicken_mouth_line(arguments)
     if action == "render_workbench_preview":
