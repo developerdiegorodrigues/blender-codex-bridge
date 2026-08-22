@@ -23,13 +23,19 @@ from mathutils import Matrix, Vector
 
 
 CORE_API_VERSION = 1
-CORE_VERSION = "0.4.4"
+CORE_VERSION = "0.4.6"
 
 
 def self_test() -> dict[str, object]:
     if bpy.app.version < (4, 0, 0):
         raise RuntimeError("Blender 4.0 or newer is required")
-    required = {"get_scene_summary", "create_hemisphere", "create_image_relief", "thicken_mouth_line"}
+    required = {
+        "get_scene_summary",
+        "create_hemisphere",
+        "create_image_relief",
+        "import_stl_assembly",
+        "thicken_mouth_line",
+    }
     missing = required - ALLOWED_ACTIONS
     if missing:
         raise RuntimeError(f"core is missing required actions: {sorted(missing)}")
@@ -55,6 +61,7 @@ ALLOWED_ACTIONS = {
     "capture_viewport",
     "create_hemisphere",
     "create_image_relief",
+    "import_stl_assembly",
     "render_workbench_preview",
     "get_mesh_components",
     "thicken_mouth_line",
@@ -270,6 +277,34 @@ def _validate_payload(payload: object) -> None:
         allowed = {"name", "image_path", "location", "normal", "up", "width", "depth", "threshold", "resolution"}
         if set(arguments) - allowed:
             raise ValueError("create_image_relief contains unknown arguments")
+    if action == "import_stl_assembly":
+        name = arguments.get("name")
+        if not isinstance(name, str) or not name or len(name) > 120:
+            raise ValueError("import_stl_assembly requires a valid name")
+        parts = arguments.get("parts")
+        if not isinstance(parts, list) or not 1 <= len(parts) <= 20:
+            raise ValueError("import_stl_assembly.parts must contain 1 to 20 entries")
+        part_names: set[str] = set()
+        for part in parts:
+            if not isinstance(part, dict) or set(part) != {"name", "path"}:
+                raise ValueError("each STL part requires name and path")
+            part_name = part.get("name")
+            path = part.get("path")
+            if not isinstance(part_name, str) or not part_name or len(part_name) > 255:
+                raise ValueError("STL part name is invalid")
+            if part_name in part_names:
+                raise ValueError("STL part names must be unique")
+            part_names.add(part_name)
+            if not isinstance(path, str) or not path or len(path) > 4096:
+                raise ValueError("STL part path is invalid")
+        _validate_vector(arguments, "location")
+        if "location" not in arguments:
+            raise ValueError("import_stl_assembly requires a location")
+        scale = arguments.get("scale")
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not 0.00001 <= scale <= 100:
+            raise ValueError("import_stl_assembly.scale must be between 0.00001 and 100")
+        if set(arguments) - {"name", "parts", "location", "scale"}:
+            raise ValueError("import_stl_assembly contains unknown arguments")
     if action == "thicken_mouth_line":
         object_name = arguments.get("object_name")
         if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
@@ -740,6 +775,88 @@ def _create_image_relief(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _import_stl_assembly(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Import STL parts that share CAD coordinates as one positioned assembly."""
+    name = arguments["name"]
+    collection_name = f"{name}.Collection"
+    if bpy.data.collections.get(collection_name) is not None:
+        raise ValueError(f"assembly collection already exists: {collection_name}")
+    for part in arguments["parts"]:
+        if bpy.data.objects.get(part["name"]) is not None:
+            raise ValueError(f"object already exists: {part['name']}")
+
+    paths: list[tuple[str, Path]] = []
+    for part in arguments["parts"]:
+        path = Path(part["path"]).expanduser().resolve()
+        if path.suffix.lower() != ".stl" or not path.is_file():
+            raise ValueError(f"STL file was not found: {path}")
+        if path.stat().st_size > 64 * 1024 * 1024:
+            raise ValueError(f"STL file exceeds the 64 MiB safety limit: {path.name}")
+        paths.append((part["name"], path))
+
+    collection = bpy.data.collections.new(collection_name)
+    bpy.context.scene.collection.children.link(collection)
+    imported: list[bpy.types.Object] = []
+    try:
+        for part_name, path in paths:
+            before = {obj.name for obj in bpy.data.objects}
+            bpy.ops.wm.stl_import(filepath=str(path))
+            new_objects = [obj for obj in bpy.data.objects if obj.name not in before]
+            meshes = [obj for obj in new_objects if obj.type == "MESH"]
+            if len(meshes) != 1:
+                raise RuntimeError(f"STL import did not create exactly one mesh: {path.name}")
+            obj = meshes[0]
+            for old_collection in tuple(obj.users_collection):
+                old_collection.objects.unlink(obj)
+            collection.objects.link(obj)
+            obj.name = part_name
+            obj.location = arguments["location"]
+            obj.rotation_euler = (0.0, 0.0, 0.0)
+            obj.scale = (float(arguments["scale"]),) * 3
+            obj["blender_codex_role"] = "stl_assembly_part"
+            obj["blender_codex_assembly"] = name
+            obj["blender_codex_source"] = str(path)
+            imported.append(obj)
+    except Exception:
+        for obj in imported:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        bpy.data.collections.remove(collection)
+        raise
+
+    material = bpy.data.materials.get("Glasses") or bpy.data.materials.new("Glasses")
+    material.diffuse_color = (0.015, 0.015, 0.02, 1.0)
+    bpy.context.view_layer.update()
+    bounds_min = Vector((math.inf, math.inf, math.inf))
+    bounds_max = Vector((-math.inf, -math.inf, -math.inf))
+    for obj in imported:
+        if not obj.data.materials:
+            obj.data.materials.append(material)
+        for corner in obj.bound_box:
+            world = obj.matrix_world @ Vector(corner)
+            bounds_min.x = min(bounds_min.x, world.x)
+            bounds_min.y = min(bounds_min.y, world.y)
+            bounds_min.z = min(bounds_min.z, world.z)
+            bounds_max.x = max(bounds_max.x, world.x)
+            bounds_max.y = max(bounds_max.y, world.y)
+            bounds_max.z = max(bounds_max.z, world.z)
+    for selected in bpy.context.selected_objects:
+        selected.select_set(False)
+    for obj in imported:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = imported[0]
+    bpy.context.view_layer.update()
+    return {
+        "name": name,
+        "collection": collection.name,
+        "parts": [obj.name for obj in imported],
+        "location": list(arguments["location"]),
+        "scale": float(arguments["scale"]),
+        "bounds_min": list(bounds_min),
+        "bounds_max": list(bounds_max),
+        "size": list(bounds_max - bounds_min),
+    }
+
+
 def _point_to_polyline_distance(
     point: Vector,
     points: list[Vector],
@@ -942,6 +1059,8 @@ def _execute(payload: dict[str, Any]) -> object:
         return _create_hemisphere(arguments)
     if action == "create_image_relief":
         return _create_image_relief(arguments)
+    if action == "import_stl_assembly":
+        return _import_stl_assembly(arguments)
     if action == "thicken_mouth_line":
         return _thicken_mouth_line(arguments)
     if action == "render_workbench_preview":

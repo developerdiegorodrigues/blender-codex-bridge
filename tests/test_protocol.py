@@ -136,6 +136,26 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(command.arguments["sha256"], digest)
 
+    def test_accepts_a_positioned_stl_assembly(self):
+        command = validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": "request-stl",
+                "action": "import_stl_assembly",
+                "arguments": {
+                    "name": "Glasses",
+                    "parts": [
+                        {"name": "Glasses.Frame", "path": "/tmp/frame.stl"},
+                        {"name": "Glasses.LeftLeg", "path": "/tmp/left.stl"},
+                    ],
+                    "location": [0, -0.22, 0.22],
+                    "scale": 0.002,
+                },
+            }
+        )
+        self.assertEqual(command.arguments["parts"][0]["name"], "Glasses.Frame")
+        self.assertEqual(command.arguments["scale"], 0.002)
+
     def test_rejects_an_invalid_core_checksum(self):
         with self.assertRaises(ProtocolError):
             validate_command(

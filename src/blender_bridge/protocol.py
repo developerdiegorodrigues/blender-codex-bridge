@@ -19,6 +19,7 @@ WRITE_ACTIONS = frozenset(
         "save_checkpoint",
         "create_hemisphere",
         "create_image_relief",
+        "import_stl_assembly",
         "thicken_mouth_line",
     }
 )
@@ -185,6 +186,34 @@ def validate_command(payload: Mapping[str, Any]) -> Command:
             "threshold": float(threshold),
             "resolution": resolution,
         }
+    elif action == "import_stl_assembly":
+        name = arguments.get("name")
+        if not isinstance(name, str) or not name or len(name) > 120:
+            raise ProtocolError("import_stl_assembly.name must be a non-empty string of at most 120 characters")
+        parts = arguments.get("parts")
+        if not isinstance(parts, Sequence) or isinstance(parts, (str, bytes)) or not 1 <= len(parts) <= 20:
+            raise ProtocolError("import_stl_assembly.parts must contain 1 to 20 entries")
+        normalized_parts: list[dict[str, str]] = []
+        names: set[str] = set()
+        for part in parts:
+            if not isinstance(part, Mapping) or set(part) != {"name", "path"}:
+                raise ProtocolError("each STL part requires name and path")
+            part_name, path = part["name"], part["path"]
+            if not isinstance(part_name, str) or not part_name or len(part_name) > 255:
+                raise ProtocolError("STL part name must be a non-empty string")
+            if part_name in names:
+                raise ProtocolError("STL part names must be unique")
+            if not isinstance(path, str) or not path or len(path) > 4096:
+                raise ProtocolError("STL part path must be a non-empty string")
+            names.add(part_name)
+            normalized_parts.append({"name": part_name, "path": path})
+        location = _vector3(arguments.get("location"), "location")
+        scale = arguments.get("scale")
+        if not isinstance(scale, Real) or isinstance(scale, bool) or not 0.00001 <= scale <= 100:
+            raise ProtocolError("import_stl_assembly.scale must be between 0.00001 and 100")
+        if set(arguments) - {"name", "parts", "location", "scale"}:
+            raise ProtocolError("import_stl_assembly contains unknown arguments")
+        arguments = {"name": name, "parts": normalized_parts, "location": location, "scale": float(scale)}
     elif action == "thicken_mouth_line":
         object_name = arguments.get("object_name")
         if not isinstance(object_name, str) or not object_name or len(object_name) > 255:

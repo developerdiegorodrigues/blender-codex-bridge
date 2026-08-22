@@ -99,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
     relief.add_argument("--depth", type=float, required=True)
     relief.add_argument("--threshold", type=float, default=0.5)
     relief.add_argument("--resolution", type=int, default=192)
+    assembly = subparsers.add_parser("assembly", help="import CAD-aligned STL parts as a positioned assembly")
+    assembly.add_argument("--name", required=True)
+    assembly.add_argument("--part", action="append", nargs=2, metavar=("NAME", "PATH"), required=True)
+    assembly.add_argument("--location", nargs=3, type=float, metavar=("X", "Y", "Z"), required=True)
+    assembly.add_argument("--scale", type=float, required=True)
     mouth = subparsers.add_parser("mouth", help="thicken a mouth line by deforming the target mesh")
     mouth.add_argument("--object", dest="object_name", required=True)
     mouth.add_argument("--point", action="append", nargs=3, type=float, metavar=("X", "Y", "Z"), required=True)
@@ -182,6 +187,18 @@ def main(argv: list[str] | None = None) -> int:
                         "depth": args.depth,
                         "threshold": args.threshold,
                         "resolution": args.resolution,
+                    },
+                )
+            )
+        elif args.command == "assembly":
+            _print(
+                BridgeClient(runtime).command(
+                    "import_stl_assembly",
+                    {
+                        "name": args.name,
+                        "parts": [{"name": name, "path": path} for name, path in args.part],
+                        "location": args.location,
+                        "scale": args.scale,
                     },
                 )
             )
