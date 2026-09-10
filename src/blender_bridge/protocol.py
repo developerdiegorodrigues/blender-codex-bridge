@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Real
+from pathlib import PurePosixPath
 from typing import Any
 
 
 PROTOCOL_VERSION = 1
 READ_ACTIONS = frozenset(
-    {"get_scene_summary", "capture_viewport", "render_workbench_preview", "get_mesh_components"}
+    {
+        "get_scene_summary",
+        "capture_viewport",
+        "render_workbench_preview",
+        "get_mesh_components",
+        "check_printability",
+    }
 )
 WRITE_ACTIONS = frozenset(
     {
@@ -25,6 +33,11 @@ WRITE_ACTIONS = frozenset(
         "restore_mesh_data",
         "simplify_mesh",
         "thicken_mouth_line",
+        "create_polygon_solid",
+        "create_polygon_wall",
+        "create_text_relief",
+        "boolean_op",
+        "export_mesh",
     }
 )
 ADMIN_ACTIONS = frozenset({"reload_core"})
@@ -156,10 +169,10 @@ def validate_command(payload: Mapping[str, Any]) -> Command:
         up = _vector3(arguments.get("up"), "up")
         width = arguments.get("width")
         depth = arguments.get("depth")
-        if not isinstance(width, Real) or isinstance(width, bool) or not 0 < width <= 10:
-            raise ProtocolError("create_image_relief.width must be between 0 and 10")
-        if not isinstance(depth, Real) or isinstance(depth, bool) or not 0 < depth <= 1:
-            raise ProtocolError("create_image_relief.depth must be between 0 and 1")
+        if not isinstance(width, Real) or isinstance(width, bool) or not 0 < width <= 1000:
+            raise ProtocolError("create_image_relief.width must be between 0 and 1000")
+        if not isinstance(depth, Real) or isinstance(depth, bool) or not 0 < depth <= 100:
+            raise ProtocolError("create_image_relief.depth must be between 0 and 100")
         threshold = arguments.get("threshold", 0.5)
         if not isinstance(threshold, Real) or isinstance(threshold, bool) or not 0 < threshold < 1:
             raise ProtocolError("create_image_relief.threshold must be between 0 and 1")
@@ -371,8 +384,8 @@ def validate_command(payload: Mapping[str, Any]) -> Command:
         target = _vector3(arguments.get("target", [0, 0, 0]), "target")
         ortho_scale = arguments.get("ortho_scale", 1.0)
         resolution = arguments.get("resolution", 800)
-        if not isinstance(ortho_scale, Real) or isinstance(ortho_scale, bool) or not 0.01 <= ortho_scale <= 100:
-            raise ProtocolError("render_workbench_preview.ortho_scale must be between 0.01 and 100")
+        if not isinstance(ortho_scale, Real) or isinstance(ortho_scale, bool) or not 0.01 <= ortho_scale <= 1000:
+            raise ProtocolError("render_workbench_preview.ortho_scale must be between 0.01 and 1000")
         if not isinstance(resolution, int) or isinstance(resolution, bool) or not 128 <= resolution <= 2048:
             raise ProtocolError("render_workbench_preview.resolution must be between 128 and 2048")
         if set(arguments) - {"view", "target", "ortho_scale", "resolution"}:
@@ -382,6 +395,177 @@ def validate_command(payload: Mapping[str, Any]) -> Command:
             "target": target,
             "ortho_scale": float(ortho_scale),
             "resolution": resolution,
+        }
+
+    elif action in {"create_polygon_solid", "create_polygon_wall"}:
+        name = arguments.get("name")
+        if not isinstance(name, str) or not name or len(name) > 255:
+            raise ProtocolError(f"{action}.name must be a non-empty string")
+        raw_points = arguments.get("points")
+        if not isinstance(raw_points, Sequence) or isinstance(raw_points, (str, bytes)):
+            raise ProtocolError(f"{action}.points must be a list of 2D points")
+        if not 3 <= len(raw_points) <= 512:
+            raise ProtocolError(f"{action}.points must contain 3 to 512 points")
+        points: list[list[float]] = []
+        for point in raw_points:
+            if (
+                not isinstance(point, Sequence)
+                or isinstance(point, (str, bytes))
+                or len(point) != 2
+                or any(not isinstance(item, Real) or isinstance(item, bool) for item in point)
+            ):
+                raise ProtocolError(f"{action}.points must contain pairs of numbers")
+            if any(not math.isfinite(float(item)) or abs(float(item)) > 10000 for item in point):
+                raise ProtocolError(f"{action}.points must stay within 10000 units of the origin")
+            points.append([float(item) for item in point])
+        height = arguments.get("height")
+        if not isinstance(height, Real) or isinstance(height, bool) or not 0 < height <= 1000:
+            raise ProtocolError(f"{action}.height must be between 0 and 1000")
+        location = _vector3(arguments.get("location", [0, 0, 0]), "location")
+        normal = _vector3(arguments.get("normal", [0, 0, 1]), "normal")
+        up = _vector3(arguments.get("up", [0, 1, 0]), "up")
+        allowed = {"name", "points", "height", "location", "normal", "up"}
+        normalized = {
+            "name": name,
+            "points": points,
+            "height": float(height),
+            "location": location,
+            "normal": normal,
+            "up": up,
+        }
+        if action == "create_polygon_wall":
+            wall_thickness = arguments.get("wall_thickness")
+            if (
+                not isinstance(wall_thickness, Real)
+                or isinstance(wall_thickness, bool)
+                or not 0 < wall_thickness <= 100
+            ):
+                raise ProtocolError("create_polygon_wall.wall_thickness must be between 0 and 100")
+            allowed.add("wall_thickness")
+            normalized["wall_thickness"] = float(wall_thickness)
+        if set(arguments) - allowed:
+            raise ProtocolError(f"{action} contains unknown arguments")
+        arguments = normalized
+    elif action == "create_text_relief":
+        name = arguments.get("name")
+        if not isinstance(name, str) or not name or len(name) > 255:
+            raise ProtocolError("create_text_relief.name must be a non-empty string")
+        text = arguments.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > 256:
+            raise ProtocolError("create_text_relief.text must be a non-empty string of at most 256 characters")
+        font_path = arguments.get("font_path")
+        if not isinstance(font_path, str) or not font_path or len(font_path) > 4096:
+            raise ProtocolError("create_text_relief.font_path must be a non-empty string")
+        size = arguments.get("size")
+        depth = arguments.get("depth")
+        if not isinstance(size, Real) or isinstance(size, bool) or not 0 < size <= 1000:
+            raise ProtocolError("create_text_relief.size must be between 0 and 1000")
+        if not isinstance(depth, Real) or isinstance(depth, bool) or not 0 < depth <= 1000:
+            raise ProtocolError("create_text_relief.depth must be between 0 and 1000")
+        tracking = arguments.get("tracking", 1.0)
+        if not isinstance(tracking, Real) or isinstance(tracking, bool) or not 0 < tracking <= 10:
+            raise ProtocolError("create_text_relief.tracking must be between 0 and 10")
+        dilate = arguments.get("dilate", 0.0)
+        if not isinstance(dilate, Real) or isinstance(dilate, bool) or not -10 <= dilate <= 10:
+            raise ProtocolError("create_text_relief.dilate must be between -10 and 10")
+        resolution_u = arguments.get("resolution_u", 12)
+        if not isinstance(resolution_u, int) or isinstance(resolution_u, bool) or not 1 <= resolution_u <= 64:
+            raise ProtocolError("create_text_relief.resolution_u must be between 1 and 64")
+        location = _vector3(arguments.get("location", [0, 0, 0]), "location")
+        normal = _vector3(arguments.get("normal", [0, 0, 1]), "normal")
+        up = _vector3(arguments.get("up", [0, 1, 0]), "up")
+        allowed = {
+            "name",
+            "text",
+            "font_path",
+            "size",
+            "depth",
+            "tracking",
+            "dilate",
+            "resolution_u",
+            "location",
+            "normal",
+            "up",
+        }
+        if set(arguments) - allowed:
+            raise ProtocolError("create_text_relief contains unknown arguments")
+        arguments = {
+            "name": name,
+            "text": text,
+            "font_path": font_path,
+            "size": float(size),
+            "depth": float(depth),
+            "tracking": float(tracking),
+            "dilate": float(dilate),
+            "resolution_u": resolution_u,
+            "location": location,
+            "normal": normal,
+            "up": up,
+        }
+    elif action == "boolean_op":
+        target = arguments.get("target")
+        tool = arguments.get("tool")
+        for field, value in (("target", target), ("tool", tool)):
+            if not isinstance(value, str) or not value or len(value) > 255:
+                raise ProtocolError(f"boolean_op.{field} must be a non-empty string")
+        if target == tool:
+            raise ProtocolError("boolean_op.target and boolean_op.tool must differ")
+        operation = arguments.get("operation", "union")
+        if not isinstance(operation, str) or operation.lower() not in {"union", "difference", "intersect"}:
+            raise ProtocolError("boolean_op.operation must be union, difference, or intersect")
+        delete_tool = arguments.get("delete_tool", True)
+        if not isinstance(delete_tool, bool):
+            raise ProtocolError("boolean_op.delete_tool must be a boolean")
+        use_self = arguments.get("use_self", True)
+        if not isinstance(use_self, bool):
+            raise ProtocolError("boolean_op.use_self must be a boolean")
+        if set(arguments) - {"target", "tool", "operation", "delete_tool", "use_self"}:
+            raise ProtocolError("boolean_op contains unknown arguments")
+        arguments = {
+            "target": target,
+            "tool": tool,
+            "operation": operation.lower(),
+            "delete_tool": delete_tool,
+            "use_self": use_self,
+        }
+    elif action == "check_printability":
+        object_name = arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ProtocolError("check_printability.object_name must be a non-empty string")
+        if set(arguments) - {"object_name"}:
+            raise ProtocolError("check_printability contains unknown arguments")
+        arguments = {"object_name": object_name}
+    elif action == "export_mesh":
+        raw_objects = arguments.get("objects")
+        if not isinstance(raw_objects, Sequence) or isinstance(raw_objects, (str, bytes)):
+            raise ProtocolError("export_mesh.objects must be a list of names")
+        if not 1 <= len(raw_objects) <= 64:
+            raise ProtocolError("export_mesh.objects must contain 1 to 64 names")
+        objects: list[str] = []
+        for object_name in raw_objects:
+            if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+                raise ProtocolError("export_mesh.objects must contain non-empty names")
+            objects.append(object_name)
+        path = arguments.get("path")
+        if not isinstance(path, str) or not path or len(path) > 255:
+            raise ProtocolError("export_mesh.path must be a non-empty string")
+        if PurePosixPath(path).is_absolute() or ".." in PurePosixPath(path).parts:
+            raise ProtocolError("export_mesh.path must be relative and must not contain '..'")
+        if not path.lower().endswith(".stl"):
+            raise ProtocolError("export_mesh.path must end in .stl")
+        export_format = arguments.get("format", "stl")
+        if export_format != "stl":
+            raise ProtocolError("export_mesh.format must be stl")
+        scale = arguments.get("scale", 1.0)
+        if not isinstance(scale, Real) or isinstance(scale, bool) or not 0 < scale <= 1000:
+            raise ProtocolError("export_mesh.scale must be between 0 and 1000")
+        if set(arguments) - {"objects", "path", "format", "scale"}:
+            raise ProtocolError("export_mesh contains unknown arguments")
+        arguments = {
+            "objects": objects,
+            "path": path,
+            "format": export_format,
+            "scale": float(scale),
         }
 
     return Command(request_id=request_id, action=action, arguments=arguments)

@@ -135,6 +135,45 @@ def build_parser() -> argparse.ArgumentParser:
     mouth.add_argument("--surface-window", type=float, default=None)
     mouth.add_argument("--normal-threshold", type=float, default=0.15)
     mouth.add_argument("--dry-run", action="store_true")
+    polygon = subparsers.add_parser("polygon", help="extrude an exact 2D profile into a closed prism")
+    polygon.add_argument("--name", required=True)
+    polygon.add_argument("--point", action="append", nargs=2, type=float, metavar=("X", "Y"), required=True)
+    polygon.add_argument("--height", type=float, required=True)
+    polygon.add_argument("--location", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0.0, 0.0, 0.0))
+    polygon.add_argument("--normal", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0.0, 0.0, 1.0))
+    polygon.add_argument("--up", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0.0, 1.0, 0.0))
+    wall = subparsers.add_parser("wall", help="build a closed wall of uniform thickness on a 2D profile")
+    wall.add_argument("--name", required=True)
+    wall.add_argument("--point", action="append", nargs=2, type=float, metavar=("X", "Y"), required=True)
+    wall.add_argument("--height", type=float, required=True)
+    wall.add_argument("--wall-thickness", type=float, required=True)
+    wall.add_argument("--location", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0.0, 0.0, 0.0))
+    wall.add_argument("--normal", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0.0, 0.0, 1.0))
+    wall.add_argument("--up", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0.0, 1.0, 0.0))
+    text = subparsers.add_parser("text", help="extrude text as font curves")
+    text.add_argument("--name", required=True)
+    text.add_argument("--text", dest="body", required=True)
+    text.add_argument("--font", dest="font_path", required=True)
+    text.add_argument("--size", type=float, required=True)
+    text.add_argument("--depth", type=float, required=True)
+    text.add_argument("--tracking", type=float, default=1.0)
+    text.add_argument("--dilate", type=float, default=0.0, help="fatten glyph strokes, in scene units")
+    text.add_argument("--resolution-u", type=int, default=12)
+    text.add_argument("--location", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0.0, 0.0, 0.0))
+    text.add_argument("--normal", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0.0, 0.0, 1.0))
+    text.add_argument("--up", nargs=3, type=float, metavar=("X", "Y", "Z"), default=(0.0, 1.0, 0.0))
+    boolean = subparsers.add_parser("boolean", help="fuse or subtract one mesh from another")
+    boolean.add_argument("--target", required=True)
+    boolean.add_argument("--tool", required=True)
+    boolean.add_argument("--operation", choices=("union", "difference", "intersect"), default="union")
+    boolean.add_argument("--keep-tool", action="store_true")
+    boolean.add_argument("--no-self", action="store_true", help="disable self-intersection handling")
+    check = subparsers.add_parser("check", help="report watertightness, components, and dimensions")
+    check.add_argument("--object", dest="object_name", required=True)
+    export = subparsers.add_parser("export", help="write meshes to STL inside the export directory")
+    export.add_argument("--object", dest="objects", action="append", required=True)
+    export.add_argument("--path", required=True)
+    export.add_argument("--scale", type=float, default=1.0)
     subparsers.add_parser("stop", help="block queued and future commands")
     subparsers.add_parser("resume", help="remove the emergency stop sentinel")
     return parser
@@ -176,6 +215,76 @@ def main(argv: list[str] | None = None) -> int:
                         "ortho_scale": args.ortho_scale,
                         "resolution": args.resolution,
                     },
+                )
+            )
+        elif args.command == "polygon":
+            _print(
+                BridgeClient(runtime).command(
+                    "create_polygon_solid",
+                    {
+                        "name": args.name,
+                        "points": args.point,
+                        "height": args.height,
+                        "location": args.location,
+                        "normal": args.normal,
+                        "up": args.up,
+                    },
+                )
+            )
+        elif args.command == "wall":
+            _print(
+                BridgeClient(runtime).command(
+                    "create_polygon_wall",
+                    {
+                        "name": args.name,
+                        "points": args.point,
+                        "height": args.height,
+                        "wall_thickness": args.wall_thickness,
+                        "location": args.location,
+                        "normal": args.normal,
+                        "up": args.up,
+                    },
+                )
+            )
+        elif args.command == "text":
+            _print(
+                BridgeClient(runtime).command(
+                    "create_text_relief",
+                    {
+                        "name": args.name,
+                        "text": args.body,
+                        "font_path": args.font_path,
+                        "size": args.size,
+                        "depth": args.depth,
+                        "tracking": args.tracking,
+                        "dilate": args.dilate,
+                        "resolution_u": args.resolution_u,
+                        "location": args.location,
+                        "normal": args.normal,
+                        "up": args.up,
+                    },
+                )
+            )
+        elif args.command == "boolean":
+            _print(
+                BridgeClient(runtime).command(
+                    "boolean_op",
+                    {
+                        "target": args.target,
+                        "tool": args.tool,
+                        "operation": args.operation,
+                        "delete_tool": not args.keep_tool,
+                        "use_self": not args.no_self,
+                    },
+                )
+            )
+        elif args.command == "check":
+            _print(BridgeClient(runtime).command("check_printability", {"object_name": args.object_name}))
+        elif args.command == "export":
+            _print(
+                BridgeClient(runtime).command(
+                    "export_mesh",
+                    {"objects": args.objects, "path": args.path, "scale": args.scale},
                 )
             )
         elif args.command == "components":

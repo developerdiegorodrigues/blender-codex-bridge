@@ -274,5 +274,115 @@ class ProtocolTests(unittest.TestCase):
             )
 
 
+    def _command(self, action, arguments, request_id="request-modelling"):
+        return validate_command(
+            {
+                "protocol_version": 1,
+                "request_id": request_id,
+                "action": action,
+                "arguments": arguments,
+            }
+        )
+
+    def test_polygon_solid_defaults_orientation(self):
+        command = self._command(
+            "create_polygon_solid",
+            {"name": "Plate", "points": [[0, 0], [10, 0], [10, 5]], "height": 6},
+        )
+        self.assertEqual(command.arguments["height"], 6.0)
+        self.assertEqual(command.arguments["normal"], [0.0, 0.0, 1.0])
+        self.assertEqual(command.arguments["up"], [0.0, 1.0, 0.0])
+        self.assertEqual(command.arguments["location"], [0.0, 0.0, 0.0])
+
+    def test_polygon_solid_rejects_short_profiles(self):
+        with self.assertRaises(ProtocolError):
+            self._command(
+                "create_polygon_solid", {"name": "Plate", "points": [[0, 0], [10, 0]], "height": 6}
+            )
+
+    def test_polygon_solid_rejects_three_dimensional_points(self):
+        with self.assertRaises(ProtocolError):
+            self._command(
+                "create_polygon_solid",
+                {"name": "Plate", "points": [[0, 0, 0], [10, 0, 0], [10, 5, 0]], "height": 6},
+            )
+
+    def test_polygon_solid_rejects_distant_points(self):
+        with self.assertRaises(ProtocolError):
+            self._command(
+                "create_polygon_solid",
+                {"name": "Plate", "points": [[0, 0], [10, 0], [99999, 5]], "height": 6},
+            )
+
+    def test_polygon_wall_requires_thickness(self):
+        with self.assertRaises(ProtocolError):
+            self._command(
+                "create_polygon_wall",
+                {"name": "Cutter", "points": [[0, 0], [10, 0], [10, 5]], "height": 6},
+            )
+
+    def test_polygon_wall_normalizes_thickness(self):
+        command = self._command(
+            "create_polygon_wall",
+            {
+                "name": "Cutter",
+                "points": [[0, 0], [10, 0], [10, 5]],
+                "height": 6,
+                "wall_thickness": 1.2,
+            },
+        )
+        self.assertEqual(command.arguments["wall_thickness"], 1.2)
+
+    def test_text_relief_defaults(self):
+        command = self._command(
+            "create_text_relief",
+            {"name": "Label", "text": "SAMPLE", "font_path": "/tmp/f.ttf", "size": 9, "depth": 2},
+        )
+        self.assertEqual(command.arguments["dilate"], 0.0)
+        self.assertEqual(command.arguments["tracking"], 1.0)
+        self.assertEqual(command.arguments["resolution_u"], 12)
+
+    def test_text_relief_rejects_blank_text(self):
+        with self.assertRaises(ProtocolError):
+            self._command(
+                "create_text_relief",
+                {"name": "Label", "text": "   ", "font_path": "/tmp/f.ttf", "size": 9, "depth": 2},
+            )
+
+    def test_boolean_op_rejects_identical_operands(self):
+        with self.assertRaises(ProtocolError):
+            self._command("boolean_op", {"target": "Plate", "tool": "Plate"})
+
+    def test_boolean_op_rejects_unknown_operation(self):
+        with self.assertRaises(ProtocolError):
+            self._command("boolean_op", {"target": "Plate", "tool": "Text", "operation": "merge"})
+
+    def test_boolean_op_lowercases_operation(self):
+        command = self._command(
+            "boolean_op", {"target": "Plate", "tool": "Text", "operation": "DIFFERENCE"}
+        )
+        self.assertEqual(command.arguments["operation"], "difference")
+        self.assertTrue(command.arguments["delete_tool"])
+
+    def test_export_mesh_refuses_path_traversal(self):
+        for path in ("../escape.stl", "/etc/escape.stl", "nested/../../escape.stl"):
+            with self.subTest(path=path), self.assertRaises(ProtocolError):
+                self._command("export_mesh", {"objects": ["Plate"], "path": path})
+
+    def test_export_mesh_requires_stl_suffix(self):
+        with self.assertRaises(ProtocolError):
+            self._command("export_mesh", {"objects": ["Plate"], "path": "part.3mf"})
+
+    def test_export_mesh_accepts_nested_relative_path(self):
+        command = self._command(
+            "export_mesh", {"objects": ["Plate"], "path": "parts/cutter.stl"}
+        )
+        self.assertEqual(command.arguments["scale"], 1.0)
+        self.assertEqual(command.arguments["format"], "stl")
+
+    def test_check_printability_rejects_extra_arguments(self):
+        with self.assertRaises(ProtocolError):
+            self._command("check_printability", {"object_name": "Plate", "verbose": True})
+
 if __name__ == "__main__":
     unittest.main()

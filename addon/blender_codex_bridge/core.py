@@ -23,7 +23,7 @@ from mathutils import Matrix, Vector
 
 
 CORE_API_VERSION = 1
-CORE_VERSION = "0.4.14"
+CORE_VERSION = "0.5.0"
 
 
 def self_test() -> dict[str, object]:
@@ -39,6 +39,12 @@ def self_test() -> dict[str, object]:
         "restore_mesh_data",
         "simplify_mesh",
         "thicken_mouth_line",
+        "create_polygon_solid",
+        "create_polygon_wall",
+        "create_text_relief",
+        "boolean_op",
+        "check_printability",
+        "export_mesh",
     }
     missing = required - ALLOWED_ACTIONS
     if missing:
@@ -73,6 +79,12 @@ ALLOWED_ACTIONS = {
     "render_workbench_preview",
     "get_mesh_components",
     "thicken_mouth_line",
+    "create_polygon_solid",
+    "create_polygon_wall",
+    "create_text_relief",
+    "boolean_op",
+    "check_printability",
+    "export_mesh",
 }
 MAX_REQUEST_BYTES = 256 * 1024
 COMMAND_TIMEOUT_SECONDS = 30.0
@@ -274,10 +286,10 @@ def _validate_payload(payload: object) -> None:
         depth = arguments.get("depth")
         threshold = arguments.get("threshold", 0.5)
         resolution = arguments.get("resolution", 192)
-        if isinstance(width, bool) or not isinstance(width, (int, float)) or not 0 < width <= 10:
-            raise ValueError("create_image_relief.width must be between 0 and 10")
-        if isinstance(depth, bool) or not isinstance(depth, (int, float)) or not 0 < depth <= 1:
-            raise ValueError("create_image_relief.depth must be between 0 and 1")
+        if isinstance(width, bool) or not isinstance(width, (int, float)) or not 0 < width <= 1000:
+            raise ValueError("create_image_relief.width must be between 0 and 1000")
+        if isinstance(depth, bool) or not isinstance(depth, (int, float)) or not 0 < depth <= 100:
+            raise ValueError("create_image_relief.depth must be between 0 and 100")
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0 < threshold < 1:
             raise ValueError("create_image_relief.threshold must be between 0 and 1")
         if isinstance(resolution, bool) or not isinstance(resolution, int) or not 32 <= resolution <= 512:
@@ -434,12 +446,125 @@ def _validate_payload(payload: object) -> None:
             _validate_vector(arguments, "target")
         ortho_scale = arguments.get("ortho_scale", 1.0)
         resolution = arguments.get("resolution", 800)
-        if isinstance(ortho_scale, bool) or not isinstance(ortho_scale, (int, float)) or not 0.01 <= ortho_scale <= 100:
-            raise ValueError("render_workbench_preview.ortho_scale must be between 0.01 and 100")
+        if isinstance(ortho_scale, bool) or not isinstance(ortho_scale, (int, float)) or not 0.01 <= ortho_scale <= 1000:
+            raise ValueError("render_workbench_preview.ortho_scale must be between 0.01 and 1000")
         if isinstance(resolution, bool) or not isinstance(resolution, int) or not 128 <= resolution <= 2048:
             raise ValueError("render_workbench_preview.resolution must be between 128 and 2048")
         if set(arguments) - {"view", "target", "ortho_scale", "resolution"}:
             raise ValueError("render_workbench_preview contains unknown arguments")
+    if action in {"create_polygon_solid", "create_polygon_wall"}:
+        name = arguments.get("name")
+        if not isinstance(name, str) or not name or len(name) > 255:
+            raise ValueError(f"{action} requires a valid name")
+        points = arguments.get("points")
+        if not isinstance(points, list) or not 3 <= len(points) <= 512:
+            raise ValueError(f"{action}.points must contain 3 to 512 points")
+        for point in points:
+            if not isinstance(point, list) or len(point) != 2:
+                raise ValueError(f"{action}.points must contain 2D points")
+            for component in point:
+                if isinstance(component, bool) or not isinstance(component, (int, float)):
+                    raise ValueError(f"{action}.points must contain numbers")
+                if not math.isfinite(component) or abs(component) > 10000:
+                    raise ValueError(f"{action}.points must stay within 10000 units of the origin")
+        height = arguments.get("height")
+        if isinstance(height, bool) or not isinstance(height, (int, float)) or not 0 < height <= 1000:
+            raise ValueError(f"{action}.height must be between 0 and 1000")
+        for field_name in ("location", "normal", "up"):
+            _validate_vector(arguments, field_name)
+        allowed = {"name", "points", "height", "location", "normal", "up"}
+        if action == "create_polygon_wall":
+            wall_thickness = arguments.get("wall_thickness")
+            if (
+                isinstance(wall_thickness, bool)
+                or not isinstance(wall_thickness, (int, float))
+                or not 0 < wall_thickness <= 100
+            ):
+                raise ValueError("create_polygon_wall.wall_thickness must be between 0 and 100")
+            allowed.add("wall_thickness")
+        if set(arguments) - allowed:
+            raise ValueError(f"{action} contains unknown arguments")
+    if action == "create_text_relief":
+        name = arguments.get("name")
+        if not isinstance(name, str) or not name or len(name) > 255:
+            raise ValueError("create_text_relief requires a valid name")
+        text = arguments.get("text")
+        if not isinstance(text, str) or not text.strip() or len(text) > 256:
+            raise ValueError("create_text_relief.text must be a non-empty string of at most 256 characters")
+        font_path = arguments.get("font_path")
+        if not isinstance(font_path, str) or not font_path:
+            raise ValueError("create_text_relief requires a font_path")
+        size = arguments.get("size")
+        depth = arguments.get("depth")
+        if isinstance(size, bool) or not isinstance(size, (int, float)) or not 0 < size <= 1000:
+            raise ValueError("create_text_relief.size must be between 0 and 1000")
+        if isinstance(depth, bool) or not isinstance(depth, (int, float)) or not 0 < depth <= 1000:
+            raise ValueError("create_text_relief.depth must be between 0 and 1000")
+        tracking = arguments.get("tracking", 1.0)
+        if isinstance(tracking, bool) or not isinstance(tracking, (int, float)) or not 0 < tracking <= 10:
+            raise ValueError("create_text_relief.tracking must be between 0 and 10")
+        dilate = arguments.get("dilate", 0.0)
+        if isinstance(dilate, bool) or not isinstance(dilate, (int, float)) or not -10 <= dilate <= 10:
+            raise ValueError("create_text_relief.dilate must be between -10 and 10")
+        resolution_u = arguments.get("resolution_u", 12)
+        if isinstance(resolution_u, bool) or not isinstance(resolution_u, int) or not 1 <= resolution_u <= 64:
+            raise ValueError("create_text_relief.resolution_u must be between 1 and 64")
+        for field_name in ("location", "normal", "up"):
+            _validate_vector(arguments, field_name)
+        allowed = {
+            "name",
+            "text",
+            "font_path",
+            "size",
+            "depth",
+            "tracking",
+            "dilate",
+            "resolution_u",
+            "location",
+            "normal",
+            "up",
+        }
+        if set(arguments) - allowed:
+            raise ValueError("create_text_relief contains unknown arguments")
+    if action == "boolean_op":
+        for field_name in ("target", "tool"):
+            value = arguments.get(field_name)
+            if not isinstance(value, str) or not value or len(value) > 255:
+                raise ValueError(f"boolean_op requires a valid {field_name}")
+        operation = arguments.get("operation", "union")
+        if not isinstance(operation, str) or operation.upper() not in {"UNION", "DIFFERENCE", "INTERSECT"}:
+            raise ValueError("boolean_op.operation must be union, difference, or intersect")
+        delete_tool = arguments.get("delete_tool", True)
+        if not isinstance(delete_tool, bool):
+            raise ValueError("boolean_op.delete_tool must be a boolean")
+        if not isinstance(arguments.get("use_self", True), bool):
+            raise ValueError("boolean_op.use_self must be a boolean")
+        if set(arguments) - {"target", "tool", "operation", "delete_tool", "use_self"}:
+            raise ValueError("boolean_op contains unknown arguments")
+    if action == "check_printability":
+        object_name = arguments.get("object_name")
+        if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+            raise ValueError("check_printability requires a valid object_name")
+        if set(arguments) - {"object_name"}:
+            raise ValueError("check_printability contains unknown arguments")
+    if action == "export_mesh":
+        objects = arguments.get("objects")
+        if not isinstance(objects, list) or not 1 <= len(objects) <= 64:
+            raise ValueError("export_mesh.objects must contain 1 to 64 names")
+        for object_name in objects:
+            if not isinstance(object_name, str) or not object_name or len(object_name) > 255:
+                raise ValueError("export_mesh.objects must contain valid names")
+        path = arguments.get("path")
+        if not isinstance(path, str) or not path or len(path) > 255:
+            raise ValueError("export_mesh requires a valid path")
+        export_format = arguments.get("format", "stl")
+        if export_format != "stl":
+            raise ValueError("export_mesh.format must be stl")
+        scale = arguments.get("scale", 1.0)
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not 0 < scale <= 1000:
+            raise ValueError("export_mesh.scale must be between 0 and 1000")
+        if set(arguments) - {"objects", "path", "format", "scale"}:
+            raise ValueError("export_mesh contains unknown arguments")
 
 
 def _scene_summary() -> dict[str, Any]:
@@ -819,7 +944,7 @@ def _create_image_relief(arguments: dict[str, Any]) -> dict[str, Any]:
     mesh = bpy.data.meshes.new_from_object(evaluated, depsgraph=depsgraph)
     welding = bmesh.new()
     welding.from_mesh(mesh)
-    bmesh.ops.remove_doubles(welding, verts=welding.verts[:], dist=1e-7)
+    bmesh.ops.remove_doubles(welding, verts=welding.verts[:], dist=_weld_tolerance(mesh))
     bmesh.ops.recalc_face_normals(welding, faces=welding.faces[:])
     welding.to_mesh(mesh)
     welding.free()
@@ -1287,6 +1412,448 @@ def _render_workbench_preview(request_id: str, arguments: dict[str, Any]) -> dic
     return {"path": str(path), "kind": "workbench", "view": view}
 
 
+def _weld_tolerance(mesh: bpy.types.Mesh) -> float:
+    """Pick a merge distance from the mesh's own size.
+
+    Blender stores coordinates as 32-bit floats, so a fixed 1e-7 sits below the
+    representable gap once coordinates reach tens of millimetres and the weld
+    silently does nothing. Scaling with the bounding box keeps the tolerance
+    safely above float noise and far below any real feature.
+    """
+    if not mesh.vertices:
+        return 1e-7
+    coordinates = [vertex.co for vertex in mesh.vertices]
+    diagonal = math.dist(
+        [min(co[axis] for co in coordinates) for axis in range(3)],
+        [max(co[axis] for co in coordinates) for axis in range(3)],
+    )
+    return max(1e-7, diagonal * 1e-6)
+
+
+def _orientation_matrix(arguments: dict[str, Any]) -> Matrix:
+    """Map local +Z onto ``normal`` and local +Y onto the ``up`` hint."""
+    normal = Vector(arguments.get("normal", (0.0, 0.0, 1.0))).normalized()
+    up = Vector(arguments.get("up", (0.0, 1.0, 0.0)))
+    up = (up - normal * up.dot(normal)).normalized()
+    if up.length < 0.5:
+        raise ValueError("normal and up vectors must not be parallel")
+    right = up.cross(normal).normalized()
+    orientation = Matrix((right, up, normal)).transposed().to_4x4()
+    orientation.translation = Vector(arguments.get("location", (0.0, 0.0, 0.0)))
+    return orientation
+
+
+def _select_only(obj: bpy.types.Object) -> None:
+    for selected in bpy.context.selected_objects:
+        selected.select_set(False)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.context.view_layer.update()
+
+
+def _bake_modifiers(obj: bpy.types.Object) -> bpy.types.Mesh:
+    """Replace the object's mesh with its evaluated result and drop modifiers."""
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = obj.evaluated_get(depsgraph)
+    baked = bpy.data.meshes.new_from_object(evaluated, depsgraph=depsgraph)
+    obj.modifiers.clear()
+    previous = obj.data
+    obj.data = baked
+    bpy.data.meshes.remove(previous)
+    baked.validate(verbose=False)
+    baked.update(calc_edges=True)
+    return baked
+
+
+def _polygon_signed_area(points: list[tuple[float, float]]) -> float:
+    total = 0.0
+    for index, (x, y) in enumerate(points):
+        next_x, next_y = points[(index + 1) % len(points)]
+        total += x * next_y - next_x * y
+    return total * 0.5
+
+
+def _segments_cross(
+    first_start: tuple[float, float],
+    first_end: tuple[float, float],
+    second_start: tuple[float, float],
+    second_end: tuple[float, float],
+) -> bool:
+    def side(origin, target, probe) -> float:
+        return (target[0] - origin[0]) * (probe[1] - origin[1]) - (target[1] - origin[1]) * (probe[0] - origin[0])
+
+    first = side(second_start, second_end, first_start)
+    second = side(second_start, second_end, first_end)
+    third = side(first_start, first_end, second_start)
+    fourth = side(first_start, first_end, second_end)
+    return (first > 0) != (second > 0) and (third > 0) != (fourth > 0)
+
+
+def _prepare_profile(raw_points: list[list[float]]) -> list[tuple[float, float]]:
+    """Validate a closed 2D profile and return it wound counter-clockwise."""
+    points: list[tuple[float, float]] = []
+    for raw in raw_points:
+        candidate = (float(raw[0]), float(raw[1]))
+        if points and abs(candidate[0] - points[-1][0]) < 1e-9 and abs(candidate[1] - points[-1][1]) < 1e-9:
+            continue
+        points.append(candidate)
+    if len(points) > 2 and abs(points[0][0] - points[-1][0]) < 1e-9 and abs(points[0][1] - points[-1][1]) < 1e-9:
+        points.pop()
+    if len(points) < 3:
+        raise ValueError("profile needs at least three distinct points")
+    area = _polygon_signed_area(points)
+    if abs(area) < 1e-9:
+        raise ValueError("profile encloses no area")
+    count = len(points)
+    for index in range(count):
+        first_start, first_end = points[index], points[(index + 1) % count]
+        for other in range(index + 1, count):
+            if other == index + 1 or (index == 0 and other == count - 1):
+                continue
+            second_start, second_end = points[other], points[(other + 1) % count]
+            if _segments_cross(first_start, first_end, second_start, second_end):
+                raise ValueError(f"profile self-intersects between segments {index} and {other}")
+    if area < 0:
+        points.reverse()
+    return points
+
+
+def _profile_bounds(profile: list[tuple[float, float]]) -> dict[str, float]:
+    return {
+        "width": max(x for x, _ in profile) - min(x for x, _ in profile),
+        "height": max(y for _, y in profile) - min(y for _, y in profile),
+    }
+
+
+def _create_polygon_solid(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Extrude an exact straight-edged profile into a closed prism."""
+    name = arguments["name"]
+    if bpy.data.objects.get(name) is not None:
+        raise ValueError(f"object already exists: {name}")
+    profile = _prepare_profile(arguments["points"])
+    height = float(arguments["height"])
+
+    mesh_data = bmesh.new()
+    bottom = [mesh_data.verts.new((x, y, 0.0)) for x, y in profile]
+    top = [mesh_data.verts.new((x, y, height)) for x, y in profile]
+    mesh_data.verts.ensure_lookup_table()
+    count = len(profile)
+    for index in range(count):
+        following = (index + 1) % count
+        mesh_data.faces.new((bottom[index], bottom[following], top[following], top[index]))
+    # The caps stay as n-gons on purpose. Splitting them here produces slivers
+    # that survive a later boolean as non-manifold edges, whereas the exact
+    # solver retriangulates a clean n-gon without artefacts. Blender tessellates
+    # concave caps correctly on export.
+    mesh_data.faces.new(tuple(reversed(bottom)))
+    mesh_data.faces.new(tuple(top))
+    bmesh.ops.recalc_face_normals(mesh_data, faces=mesh_data.faces[:])
+
+    mesh = bpy.data.meshes.new(f"{name}.Mesh")
+    mesh_data.to_mesh(mesh)
+    mesh_data.free()
+    mesh.validate(verbose=False)
+    mesh.update(calc_edges=True)
+    obj = bpy.data.objects.new(name, mesh)
+    obj.matrix_world = _orientation_matrix(arguments)
+    obj["blender_codex_role"] = "polygon_solid"
+    bpy.context.collection.objects.link(obj)
+    _select_only(obj)
+    bounds = _profile_bounds(profile)
+    return {
+        "name": obj.name,
+        "points": count,
+        "height": height,
+        "profile_width": bounds["width"],
+        "profile_height": bounds["height"],
+        "vertices": len(mesh.vertices),
+        "faces": len(mesh.polygons),
+    }
+
+
+def _create_polygon_wall(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Build a closed wall of uniform thickness centred on a 2D profile."""
+    name = arguments["name"]
+    if bpy.data.objects.get(name) is not None:
+        raise ValueError(f"object already exists: {name}")
+    profile = _prepare_profile(arguments["points"])
+    height = float(arguments["height"])
+    wall_thickness = float(arguments["wall_thickness"])
+
+    mesh_data = bmesh.new()
+    bottom = [mesh_data.verts.new((x, y, 0.0)) for x, y in profile]
+    top = [mesh_data.verts.new((x, y, height)) for x, y in profile]
+    mesh_data.verts.ensure_lookup_table()
+    count = len(profile)
+    for index in range(count):
+        following = (index + 1) % count
+        mesh_data.faces.new((bottom[index], bottom[following], top[following], top[index]))
+    bmesh.ops.recalc_face_normals(mesh_data, faces=mesh_data.faces[:])
+
+    mesh = bpy.data.meshes.new(f"{name}.Mesh")
+    mesh_data.to_mesh(mesh)
+    mesh_data.free()
+    mesh.validate(verbose=False)
+    mesh.update(calc_edges=True)
+    obj = bpy.data.objects.new(name, mesh)
+    obj.matrix_world = _orientation_matrix(arguments)
+    obj["blender_codex_role"] = "polygon_wall"
+    bpy.context.collection.objects.link(obj)
+
+    # Solidify thickens the ribbon along its horizontal normals, so the wall
+    # straddles the nominal profile and the rim closes the top and bottom.
+    modifier = obj.modifiers.new("Wall", "SOLIDIFY")
+    modifier.thickness = wall_thickness
+    modifier.offset = 0.0
+    modifier.use_even_offset = True
+    modifier.use_quality_normals = True
+    modifier.use_rim = True
+    modifier.use_rim_only = False
+    baked = _bake_modifiers(obj)
+    _select_only(obj)
+    bounds = _profile_bounds(profile)
+    return {
+        "name": obj.name,
+        "points": count,
+        "height": height,
+        "wall_thickness": wall_thickness,
+        "profile_width": bounds["width"] + wall_thickness,
+        "profile_height": bounds["height"] + wall_thickness,
+        "vertices": len(baked.vertices),
+        "faces": len(baked.polygons),
+    }
+
+
+def _create_text_relief(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Extrude text as font curves so letterforms stay exact, not rasterised."""
+    name = arguments["name"]
+    if bpy.data.objects.get(name) is not None:
+        raise ValueError(f"object already exists: {name}")
+    font_path = Path(arguments["font_path"]).expanduser().resolve()
+    if font_path.suffix.lower() not in {".ttf", ".otf"} or not font_path.is_file():
+        raise ValueError("font_path must reference an existing TTF or OTF file")
+    if font_path.stat().st_size > 32 * 1024 * 1024:
+        raise ValueError("font file exceeds the 32 MiB safety limit")
+
+    depth = float(arguments["depth"])
+    dilate = float(arguments.get("dilate", 0.0))
+    font = bpy.data.fonts.load(str(font_path), check_existing=True)
+    curve = bpy.data.curves.new(f"{name}.Curve", type="FONT")
+    curve.body = arguments["text"]
+    curve.font = font
+    curve.size = float(arguments["size"])
+    curve.space_character = float(arguments.get("tracking", 1.0))
+    curve.align_x = "CENTER"
+    curve.align_y = "CENTER"
+    # Dilating the glyph outlines is how thin strokes are brought above the
+    # nozzle's minimum printable width without changing the typeface.
+    curve.offset = dilate
+    curve.extrude = depth * 0.5
+    curve.fill_mode = "BOTH"
+    curve.resolution_u = int(arguments.get("resolution_u", 12))
+
+    source = bpy.data.objects.new(f"{name}.Source", curve)
+    bpy.context.collection.objects.link(source)
+    source.matrix_world = _orientation_matrix(arguments) @ Matrix.Translation((0.0, 0.0, depth * 0.5))
+
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = source.evaluated_get(depsgraph)
+    mesh = bpy.data.meshes.new_from_object(evaluated, depsgraph=depsgraph)
+    if not mesh.polygons:
+        bpy.data.objects.remove(source, do_unlink=True)
+        bpy.data.meshes.remove(mesh)
+        raise ValueError("text produced no geometry; check the font and body")
+    welding = bmesh.new()
+    welding.from_mesh(mesh)
+    bmesh.ops.remove_doubles(welding, verts=welding.verts[:], dist=_weld_tolerance(mesh))
+    bmesh.ops.recalc_face_normals(welding, faces=welding.faces[:])
+    welding.to_mesh(mesh)
+    welding.free()
+    mesh.validate(verbose=False)
+    mesh.update(calc_edges=True)
+
+    obj = bpy.data.objects.new(name, mesh)
+    obj.matrix_world = source.matrix_world.copy()
+    bpy.context.collection.objects.link(obj)
+    bpy.data.objects.remove(source, do_unlink=True)
+    obj["blender_codex_role"] = "text_relief"
+    obj["blender_codex_text"] = arguments["text"]
+    _select_only(obj)
+    local = [Vector(corner) for corner in obj.bound_box]
+    return {
+        "name": obj.name,
+        "text": arguments["text"],
+        "font": font_path.name,
+        "size": curve.size,
+        "dilate": dilate,
+        "depth": depth,
+        "width": max(corner.x for corner in local) - min(corner.x for corner in local),
+        "cap_height": max(corner.y for corner in local) - min(corner.y for corner in local),
+        "vertices": len(mesh.vertices),
+        "faces": len(mesh.polygons),
+    }
+
+
+def _boolean_op(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Fuse or subtract one mesh from another with the exact solver."""
+    target_name = arguments["target"]
+    tool_name = arguments["tool"]
+    if target_name == tool_name:
+        raise ValueError("boolean_op target and tool must differ")
+    target = bpy.data.objects.get(target_name)
+    tool = bpy.data.objects.get(tool_name)
+    if target is None or target.type != "MESH":
+        raise ValueError(f"boolean_op target must be an existing mesh: {target_name}")
+    if tool is None or tool.type != "MESH":
+        raise ValueError(f"boolean_op tool must be an existing mesh: {tool_name}")
+    operation = arguments.get("operation", "union").upper()
+
+    modifier = target.modifiers.new("Boolean", "BOOLEAN")
+    modifier.operation = operation
+    modifier.object = tool
+    modifier.solver = "EXACT"
+    # Tools built from traced artwork are many shells that touch one another;
+    # without self-intersection handling the exact solver drops the target
+    # entirely and returns the tool. Correctness is worth the extra time.
+    modifier.use_self = bool(arguments.get("use_self", True))
+    baked = _bake_modifiers(target)
+    welding = bmesh.new()
+    welding.from_mesh(baked)
+    bmesh.ops.remove_doubles(welding, verts=welding.verts[:], dist=_weld_tolerance(baked))
+    welding.to_mesh(baked)
+    welding.free()
+    baked.validate(verbose=False)
+    baked.update(calc_edges=True)
+    if arguments.get("delete_tool", True):
+        tool_data = tool.data
+        bpy.data.objects.remove(tool, do_unlink=True)
+        if tool_data.users == 0:
+            bpy.data.meshes.remove(tool_data)
+    _select_only(target)
+    return {
+        "target": target.name,
+        "tool": tool_name,
+        "operation": operation,
+        "deleted_tool": bool(arguments.get("delete_tool", True)),
+        "vertices": len(baked.vertices),
+        "faces": len(baked.polygons),
+    }
+
+
+def _mesh_report(obj: bpy.types.Object) -> dict[str, Any]:
+    mesh_data = bmesh.new()
+    mesh_data.from_mesh(obj.data)
+    mesh_data.transform(obj.matrix_world)
+    non_manifold = sum(1 for edge in mesh_data.edges if not edge.is_manifold)
+    boundary = sum(1 for edge in mesh_data.edges if edge.is_boundary)
+    loose_vertices = sum(1 for vertex in mesh_data.verts if not vertex.link_edges)
+    triangles = sum(max(len(face.verts) - 2, 0) for face in mesh_data.faces)
+    volume = mesh_data.calc_volume(signed=True)
+
+    remaining = set(mesh_data.verts)
+    components = 0
+    while remaining:
+        components += 1
+        stack = [remaining.pop()]
+        while stack:
+            vertex = stack.pop()
+            for edge in vertex.link_edges:
+                other = edge.other_vert(vertex)
+                if other in remaining:
+                    remaining.discard(other)
+                    stack.append(other)
+
+    coordinates = [vertex.co.copy() for vertex in mesh_data.verts]
+    mesh_data.free()
+    if not coordinates:
+        raise ValueError(f"object has no geometry: {obj.name}")
+    minimum = [min(co[axis] for co in coordinates) for axis in range(3)]
+    maximum = [max(co[axis] for co in coordinates) for axis in range(3)]
+    return {
+        "name": obj.name,
+        "dimensions": [maximum[axis] - minimum[axis] for axis in range(3)],
+        "minimum": minimum,
+        "maximum": maximum,
+        "triangles": triangles,
+        "non_manifold_edges": non_manifold,
+        "boundary_edges": boundary,
+        "loose_vertices": loose_vertices,
+        "components": components,
+        "volume": volume,
+        "watertight": non_manifold == 0 and boundary == 0 and loose_vertices == 0,
+    }
+
+
+def _check_printability(arguments: dict[str, Any]) -> dict[str, Any]:
+    obj = bpy.data.objects.get(arguments["object_name"])
+    if obj is None or obj.type != "MESH":
+        raise ValueError(f"check_printability requires an existing mesh: {arguments.get('object_name')}")
+    report = _mesh_report(obj)
+    report["ok"] = report["watertight"] and report["components"] == 1 and report["volume"] > 0
+    return report
+
+
+def _export_dir() -> Path:
+    configured = os.environ.get("BLENDER_CODEX_EXPORT_DIR")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return _runtime_dir() / "exports"
+
+
+def _export_mesh(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Write selected objects to STL inside the allowed export directory."""
+    relative = Path(arguments["path"])
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("export_mesh.path must be a relative path without '..'")
+    if relative.suffix.lower() != ".stl":
+        raise ValueError("export_mesh.path must end in .stl")
+    root = _export_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    destination = (root / relative).resolve()
+    if root != destination.parent and root not in destination.parents:
+        raise ValueError("export_mesh.path escapes the allowed export directory")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    objects: list[bpy.types.Object] = []
+    for object_name in arguments["objects"]:
+        obj = bpy.data.objects.get(object_name)
+        if obj is None or obj.type != "MESH":
+            raise ValueError(f"export_mesh requires existing meshes: {object_name}")
+        objects.append(obj)
+
+    if not hasattr(bpy.ops.export_mesh, "stl"):
+        import addon_utils
+
+        addon_utils.enable("io_mesh_stl", default_set=False, persistent=False)
+    if not hasattr(bpy.ops.export_mesh, "stl"):
+        raise RuntimeError("the STL exporter add-on is unavailable")
+
+    for selected in bpy.context.selected_objects:
+        selected.select_set(False)
+    for obj in objects:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = objects[0]
+    bpy.context.view_layer.update()
+    bpy.ops.export_mesh.stl(
+        filepath=str(destination),
+        use_selection=True,
+        global_scale=float(arguments.get("scale", 1.0)),
+        use_mesh_modifiers=True,
+        ascii=False,
+        use_scene_unit=False,
+    )
+    if not destination.is_file():
+        raise RuntimeError(f"the exporter produced no file at {destination}")
+    return {
+        "path": str(destination),
+        "bytes": destination.stat().st_size,
+        "scale": float(arguments.get("scale", 1.0)),
+        "objects": [_mesh_report(obj) for obj in objects],
+    }
+
+
 def _execute(payload: dict[str, Any]) -> object:
     action = payload["action"]
     arguments = payload.get("arguments", {})
@@ -1318,6 +1885,18 @@ def _execute(payload: dict[str, Any]) -> object:
         return _simplify_mesh(arguments)
     if action == "thicken_mouth_line":
         return _thicken_mouth_line(arguments)
+    if action == "create_polygon_solid":
+        return _create_polygon_solid(arguments)
+    if action == "create_polygon_wall":
+        return _create_polygon_wall(arguments)
+    if action == "create_text_relief":
+        return _create_text_relief(arguments)
+    if action == "boolean_op":
+        return _boolean_op(arguments)
+    if action == "check_printability":
+        return _check_printability(arguments)
+    if action == "export_mesh":
+        return _export_mesh(arguments)
     if action == "render_workbench_preview":
         return _render_workbench_preview(payload["request_id"], arguments)
     raise ValueError(f"unsupported action: {action}")
