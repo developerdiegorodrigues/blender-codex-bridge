@@ -31,7 +31,8 @@ python3 -m venv .venv
 
 ### Instalar na sessao atual do Blender 4.0
 
-Primeiro gere o pacote (um pacote pronto tambem pode existir em `dist/`):
+Primeiro gere o pacote. O diretorio `dist/` nao e versionado, entao um clone
+sempre precisa construi-lo a partir do fonte:
 
 ```bash
 mkdir -p dist
@@ -57,6 +58,8 @@ blender-agent deploy
 blender-agent reload
 blender-agent rollback
 blender-agent scene
+blender-agent transform --name Cube --location 0 0 1
+blender-agent undo
 blender-agent checkpoint before-change
 blender-agent capture
 blender-agent hemisphere --name Pupil.L \
@@ -112,7 +115,22 @@ As tres variaveis abaixo devem ser iguais no Blender e no terminal:
 - `BLENDER_CODEX_RUNTIME_DIR` (padrao: diretorio temporario do usuario).
 
 O token e os dados de conexao ficam no diretorio de runtime com permissao
-restrita ao usuario. Nao exponha o servidor em uma interface de rede.
+restrita ao usuario.
+
+## Modelo de seguranca
+
+O servidor so aceita `127.0.0.1` ou `localhost`; qualquer outro valor de
+`BLENDER_CODEX_HOST` e recusado na inicializacao. O token tem 32 bytes, e
+comparado em tempo constante e fica em um arquivo `0600`, dentro de um
+diretorio de runtime `0700`.
+
+O token nao e uma sandbox. Quem consegue le-lo executa Python dentro do seu
+Blender: a acao `reload_core` importa um modulo do diretorio de releases e o
+executa no processo. As travas existentes limitam a origem do modulo -- ele
+precisa estar dentro de `releases/`, casar com um SHA-256 informado, ter no
+maximo 2 MiB e passar no autoteste -- mas nao restringem o que o codigo faz
+depois de carregado. Trate o token como equivalente a execucao de codigo local
+com o seu usuario, e nao exponha o servidor em uma interface de rede.
 
 ## Testes
 
@@ -122,3 +140,7 @@ python3 -m unittest discover -s tests -v
 
 Consulte [PLAN.md](PLAN.md) para as fases, criterios de aceite e decisoes de
 seguranca.
+
+## Licenca
+
+MIT. Veja [LICENSE](LICENSE).

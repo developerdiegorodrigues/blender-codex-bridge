@@ -6,6 +6,9 @@ build-backend = "setuptools.build_meta"
 name = "blender-codex-bridge"
 version = "0.1.0"
 description = "Local, auditable bridge between Codex and Blender"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Diego Rodrigues", email = "developerdiegorodrigues@users.noreply.github.com" }]
 requires-python = ">=3.10"
 dependencies = []
 

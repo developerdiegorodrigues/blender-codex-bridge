@@ -72,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("reload", help="reload the current staged core release")
     subparsers.add_parser("rollback", help="atomically restore the previous core release")
     subparsers.add_parser("scene", help="summarize the open Blender scene")
+    transform = subparsers.add_parser("transform", help="move, rotate, or scale an object")
+    transform.add_argument("--name", required=True)
+    transform.add_argument("--location", nargs=3, type=float, metavar=("X", "Y", "Z"))
+    transform.add_argument("--rotation", nargs=3, type=float, metavar=("X", "Y", "Z"))
+    transform.add_argument("--scale", nargs=3, type=float, metavar=("X", "Y", "Z"))
+    subparsers.add_parser("undo", help="undo the last change in the open scene")
     checkpoint = subparsers.add_parser("checkpoint", help="save a timestamped copy of the scene")
     checkpoint.add_argument("label", nargs="?", default="checkpoint")
     subparsers.add_parser("capture", help="capture the active 3D viewport")
@@ -201,6 +207,17 @@ def main(argv: list[str] | None = None) -> int:
             _print(_reload_saved(runtime, "previous"))
         elif args.command == "scene":
             _print(BridgeClient(runtime).command("get_scene_summary"))
+        elif args.command == "transform":
+            # Which fields are required is the protocol's rule, not the CLI's:
+            # send what was supplied and let validate_command reject an empty set.
+            transform_arguments: dict[str, object] = {"name": args.name}
+            for field in ("location", "rotation", "scale"):
+                value = getattr(args, field)
+                if value is not None:
+                    transform_arguments[field] = value
+            _print(BridgeClient(runtime).command("transform_object", transform_arguments))
+        elif args.command == "undo":
+            _print(BridgeClient(runtime).command("undo"))
         elif args.command == "checkpoint":
             _print(BridgeClient(runtime).command("save_checkpoint", {"label": args.label}))
         elif args.command == "capture":

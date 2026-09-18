@@ -1,19 +1,18 @@
-"""Blender add-on exposing a small authenticated local control surface."""
+"""Modeling operations the bridge runs on the Blender main thread.
+
+This is the hot-reloadable half of the add-on. It owns geometry and nothing
+else: the bootstrap in __init__.py keeps the HTTP server, the token, the
+command queue and the STATE object, and reaches this module through
+_validate_payload, _execute and self_test.
+"""
 
 from __future__ import annotations
 
-import json
 import math
 import os
-import queue
 import re
-import secrets
 import tempfile
-import threading
 import time
-from dataclasses import dataclass, field
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +22,7 @@ from mathutils import Matrix, Vector
 
 
 CORE_API_VERSION = 1
-CORE_VERSION = "0.5.0"
+CORE_VERSION = "0.6.0"
 
 
 def self_test() -> dict[str, object]:
@@ -51,16 +50,6 @@ def self_test() -> dict[str, object]:
         raise RuntimeError(f"core is missing required actions: {sorted(missing)}")
     return {"ok": True, "core_version": CORE_VERSION, "actions": sorted(ALLOWED_ACTIONS)}
 
-
-bl_info = {
-    "name": "Blender Codex Bridge",
-    "author": "NoctisLab",
-    "version": (0, 3, 0),
-    "blender": (4, 0, 0),
-    "location": "Preferences > Add-ons",
-    "description": "Authenticated local bridge for structured Codex tools",
-    "category": "Interface",
-}
 
 PROTOCOL_VERSION = 1
 ALLOWED_ACTIONS = {
@@ -98,112 +87,9 @@ def _runtime_dir() -> Path:
     return Path(tempfile.gettempdir()) / f"blender-codex-bridge-{uid}"
 
 
-@dataclass
-class PendingCommand:
-    payload: dict[str, Any]
-    done: threading.Event = field(default_factory=threading.Event)
-    response: dict[str, Any] | None = None
-
-
-@dataclass
-class BridgeState:
-    runtime: Path
-    token: str
-    commands: queue.Queue[PendingCommand] = field(default_factory=queue.Queue)
-    server: ThreadingHTTPServer | None = None
-    thread: threading.Thread | None = None
-
-    @property
-    def stopped(self) -> bool:
-        return (self.runtime / "STOP").exists()
-
-
-STATE: BridgeState | None = None
-
-
-def _json_response(handler: BaseHTTPRequestHandler, status: HTTPStatus, payload: object) -> None:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    handler.send_response(status.value)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
-
-
-class RequestHandler(BaseHTTPRequestHandler):
-    server_version = "BlenderCodexBridge/0.1"
-
-    def log_message(self, format: str, *args: object) -> None:
-        print(f"[Blender Codex Bridge] {format % args}")
-
-    def _authorized(self) -> bool:
-        assert STATE is not None
-        supplied = self.headers.get("Authorization", "")
-        return secrets.compare_digest(supplied, f"Bearer {STATE.token}")
-
-    def _require_authorization(self) -> bool:
-        if self._authorized():
-            return True
-        _json_response(self, HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "unauthorized"})
-        return False
-
-    def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-        if not self._require_authorization():
-            return
-        if self.path != "/v1/health":
-            _json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
-            return
-        assert STATE is not None
-        _json_response(
-            self,
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "protocol_version": PROTOCOL_VERSION,
-                "blender_version": bpy.app.version_string,
-                "stopped": STATE.stopped,
-                "queue_depth": STATE.commands.qsize(),
-            },
-        )
-
-    def do_POST(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-        if not self._require_authorization():
-            return
-        if self.path != "/v1/commands":
-            _json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
-            return
-        assert STATE is not None
-        if STATE.stopped:
-            _json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "emergency_stop_active"})
-            return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            length = 0
-        if length <= 0 or length > MAX_REQUEST_BYTES:
-            _json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_content_length"})
-            return
-        try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-            _validate_payload(payload)
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-            _json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
-            return
-
-        command = PendingCommand(payload=payload)
-        STATE.commands.put(command)
-        if not command.done.wait(COMMAND_TIMEOUT_SECONDS):
-            _json_response(self, HTTPStatus.GATEWAY_TIMEOUT, {"ok": False, "error": "command_timeout"})
-            return
-        _json_response(self, HTTPStatus.OK, command.response)
-
-
-def _validate_vector(arguments: dict[str, Any], name: str) -> None:
-    if name not in arguments:
-        return
-    value = arguments[name]
-    if not isinstance(value, list) or len(value) != 3 or any(not isinstance(item, (int, float)) for item in value):
-        raise ValueError(f"{name} must contain three numbers")
+# Injected by the bootstrap when it activates this core. Only .runtime is
+# read here; the bootstrap owns the server, the queue and the token.
+STATE: Any = None
 
 
 def _validate_payload(payload: object) -> None:
@@ -1902,76 +1788,3 @@ def _execute(payload: dict[str, Any]) -> object:
     raise ValueError(f"unsupported action: {action}")
 
 
-def _process_queue() -> float:
-    if STATE is None:
-        return None
-    for _ in range(5):
-        try:
-            command = STATE.commands.get_nowait()
-        except queue.Empty:
-            break
-        try:
-            if STATE.stopped:
-                raise RuntimeError("emergency stop active")
-            result = _execute(command.payload)
-            command.response = {"ok": True, "request_id": command.payload["request_id"], "result": result}
-        except Exception as exc:  # Blender errors must be returned to the caller.
-            command.response = {"ok": False, "request_id": command.payload.get("request_id"), "error": str(exc)}
-        finally:
-            command.done.set()
-            STATE.commands.task_done()
-    return 0.05
-
-
-def _write_private(path: Path, text: str) -> None:
-    path.write_text(text, encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
-
-
-def register() -> None:
-    global STATE
-    if STATE is not None:
-        return
-    runtime = _runtime_dir()
-    runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
-    token = secrets.token_urlsafe(32)
-    host = os.environ.get("BLENDER_CODEX_HOST", "127.0.0.1")
-    if host not in {"127.0.0.1", "localhost"}:
-        raise RuntimeError("Blender Codex Bridge only permits a loopback host")
-    port = int(os.environ.get("BLENDER_CODEX_PORT", "9876"))
-    server = ThreadingHTTPServer((host, port), RequestHandler)
-    state = BridgeState(runtime=runtime, token=token, server=server)
-    state.thread = threading.Thread(target=server.serve_forever, name="blender-codex-bridge", daemon=True)
-    STATE = state
-    _write_private(runtime / "token", token)
-    _write_private(
-        runtime / "connection.json",
-        json.dumps({"url": f"http://{host}:{server.server_port}", "pid": os.getpid(), "protocol_version": PROTOCOL_VERSION}),
-    )
-    state.thread.start()
-    bpy.app.timers.register(_process_queue, first_interval=0.05, persistent=True)
-    print(f"[Blender Codex Bridge] listening on {host}:{server.server_port}")
-
-
-def unregister() -> None:
-    global STATE
-    state = STATE
-    STATE = None
-    if state is None:
-        return
-    if bpy.app.timers.is_registered(_process_queue):
-        bpy.app.timers.unregister(_process_queue)
-    if state.server is not None:
-        state.server.shutdown()
-        state.server.server_close()
-    if state.thread is not None:
-        state.thread.join(timeout=2.0)
-    for name in ("connection.json", "token"):
-        try:
-            (state.runtime / name).unlink()
-        except FileNotFoundError:
-            pass
-    print("[Blender Codex Bridge] stopped")

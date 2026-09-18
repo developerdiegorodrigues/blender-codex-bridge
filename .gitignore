@@ -1,3 +1,8 @@
+# Client work and its source artwork are not part of this tool.
+# Keep them here on disk, never in the published history.
+reference/
+recipes/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -31,6 +36,7 @@ captures/
 checkpoints/
 
 # Editors and operating systems
+.claude/settings.local.json
 .idea/
 .vscode/
 .DS_Store

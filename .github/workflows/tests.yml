@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor because that is what Blender 4.0 bundles.
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the client
+        run: pip install -e .
+
+      - name: Run the suite
+        # The add-on half is imported straight from addon/ by the tests,
+        # which stub bpy: nothing here needs a Blender installation.
+        run: python -m unittest discover -s tests -v
